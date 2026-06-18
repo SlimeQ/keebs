@@ -8,7 +8,7 @@
         MinHeight="185"
         WindowStartupLocation="CenterScreen"
         WindowStyle="SingleBorderWindow"
-        ResizeMode="CanResizeWithGrip"
+        ResizeMode="CanResize"
         ShowActivated="False"
         Topmost="True"
         Icon="Assets/keebs.ico"
@@ -16,9 +16,9 @@
     <Window.Resources>
         <Style x:Key="KeyboardButton" TargetType="Button">
             <Setter Property="Focusable" Value="False" />
-            <Setter Property="MinHeight" Value="26" />
-            <Setter Property="Margin" Value="3" />
-            <Setter Property="Padding" Value="3,2" />
+            <Setter Property="MinHeight" Value="18" />
+            <Setter Property="Margin" Value="2" />
+            <Setter Property="Padding" Value="2,1" />
             <Setter Property="FontSize" Value="16" />
             <Setter Property="FontWeight" Value="SemiBold" />
             <Setter Property="Foreground" Value="#F5F7FA" />
@@ -75,7 +75,7 @@
             <RowDefinition Height="Auto" />
         </Grid.RowDefinitions>
 
-        <Grid Grid.Row="0" Margin="0,0,0,4">
+        <Grid x:Name="HeaderBar" Grid.Row="0" Margin="0,0,0,4">
             <Grid.ColumnDefinitions>
                 <ColumnDefinition Width="*" />
                 <ColumnDefinition Width="Auto" />
@@ -122,7 +122,7 @@
             </Grid.RowDefinitions>
         </Grid>
 
-        <Grid Grid.Row="2" Margin="0,4,0,0">
+        <Grid x:Name="FooterBar" Grid.Row="2" Margin="0,4,0,0">
             <Grid.ColumnDefinitions>
                 <ColumnDefinition Width="Auto" />
                 <ColumnDefinition Width="*" />

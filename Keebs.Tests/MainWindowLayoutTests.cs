@@ -16,7 +16,7 @@ public sealed class MainWindowLayoutTests
 
                 Assert.Equal(390, window.MinWidth);
                 Assert.Equal(185, window.MinHeight);
-                Assert.Equal(System.Windows.ResizeMode.CanResizeWithGrip, window.ResizeMode);
+                Assert.Equal(System.Windows.ResizeMode.CanResize, window.ResizeMode);
                 Assert.Equal(System.Windows.WindowStyle.SingleBorderWindow, window.WindowStyle);
 
                 window.Close();

@@ -7,3 +7,4 @@ artifacts/
 *.suo
 *.wixpdb
 TestResults/
+feedback/

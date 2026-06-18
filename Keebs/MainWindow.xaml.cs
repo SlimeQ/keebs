@@ -4,7 +4,6 @@ using System.Runtime.CompilerServices;
 using System.Runtime.InteropServices;
 using System.Windows;
 using System.Windows.Controls;
-using System.Windows.Controls.Primitives;
 using System.Windows.Interop;
 
 namespace Keebs;
@@ -100,18 +99,23 @@ public partial class MainWindow : Window, INotifyPropertyChanged
 
     private void AddRow(int rowIndex, IReadOnlyList<string> labels)
     {
-        var row = new UniformGrid
+        var row = new Grid
         {
-            Rows = 1,
-            Columns = labels.Count,
+            Tag = rowIndex,
             Margin = GetRowMargin(rowIndex)
         };
 
-        foreach (var label in labels)
+        for (var index = 0; index < labels.Count; index++)
         {
+            var label = labels[index];
+            row.ColumnDefinitions.Add(new ColumnDefinition
+            {
+                Width = new GridLength(GetKeyWeight(label), GridUnitType.Star)
+            });
+
             var button = new Button
             {
-                Content = label,
+                Content = GetKeyDisplay(label),
                 Tag = label,
                 Style = (Style)FindResource(label is "Shift" or "Back" or "Tab" or "Enter"
                     ? "UtilityButton"
@@ -119,6 +123,7 @@ public partial class MainWindow : Window, INotifyPropertyChanged
             };
 
             button.Click += Key_Click;
+            Grid.SetColumn(button, index);
             row.Children.Add(button);
         }
 
@@ -251,7 +256,7 @@ public partial class MainWindow : Window, INotifyPropertyChanged
     private void RefreshShiftLabels()
     {
         foreach (var button in KeyboardGrid.Children
-                     .OfType<UniformGrid>()
+                     .OfType<Grid>()
                      .SelectMany(row => row.Children.OfType<Button>()))
         {
             if (button.Tag is not string tag || tag.Length != 1 || !char.IsLetter(tag[0]))
@@ -275,24 +280,33 @@ public partial class MainWindow : Window, INotifyPropertyChanged
         var height = ActualHeight > 0 ? ActualHeight : Height;
         var compactness = Math.Min(width / 980, height / 360);
 
-        KeyFontSize = Math.Clamp(18 * compactness, 11, 18);
+        KeyFontSize = Math.Clamp(18 * compactness, 10, 18);
         StatusFontSize = Math.Clamp(12 * compactness, 9, 12);
-        var margin = Math.Clamp(12 * compactness, 5, 12);
+        var margin = Math.Clamp(12 * compactness, 3, 12);
         OuterMargin = new Thickness(margin);
 
-        foreach (var row in KeyboardGrid.Children.OfType<UniformGrid>())
+        var compactHeight = height < 235;
+        FooterBar.Visibility = compactHeight ? Visibility.Collapsed : Visibility.Visible;
+        HeaderBar.Margin = new Thickness(0, 0, 0, compactHeight ? 2 : 4);
+
+        foreach (var row in KeyboardGrid.Children.OfType<Grid>())
         {
             row.Margin = GetRowMargin(Grid.GetRow(row));
 
             foreach (var button in row.Children.OfType<Button>())
             {
-                var keyMargin = Math.Clamp(4 * compactness, 1.5, 4);
+                var keyMargin = Math.Clamp(4 * compactness, compactHeight ? 0.75 : 1.5, 4);
                 button.Margin = new Thickness(keyMargin);
-                button.MinHeight = Math.Clamp(46 * compactness, 24, 46);
+                button.MinHeight = Math.Clamp(46 * compactness, compactHeight ? 17 : 22, 46);
+
+                if (button.Tag is string key)
+                {
+                    button.Content = GetKeyDisplay(key);
+                }
             }
         }
 
-        FooterHint.Visibility = width < 620 || height < 250
+        FooterHint.Visibility = width < 620 || height < 270
             ? Visibility.Collapsed
             : Visibility.Visible;
     }
@@ -302,6 +316,37 @@ public partial class MainWindow : Window, INotifyPropertyChanged
         var width = ActualWidth > 0 ? ActualWidth : Width;
         var inset = rowIndex == 1 ? Math.Clamp(width * 0.025, 6, 24) : 0;
         return new Thickness(inset, 0, inset, 0);
+    }
+
+    private double GetKeyWeight(string key)
+    {
+        return key switch
+        {
+            "Space" => 4.4,
+            "Shift" or "Back" or "Enter" => 1.55,
+            "Tab" => 1.25,
+            _ => 1
+        };
+    }
+
+    private string GetKeyDisplay(string key)
+    {
+        if (key.Length == 1 && char.IsLetter(key[0]))
+        {
+            return _shift ? key.ToUpperInvariant() : key;
+        }
+
+        var width = ActualWidth > 0 ? ActualWidth : Width;
+        return width < 460
+            ? key switch
+            {
+                "Shift" => "Sh",
+                "Back" => "Bk",
+                "Enter" => "Ent",
+                "Space" => "Space",
+                _ => key
+            }
+            : key;
     }
 
     private void SetField<T>(ref T field, T value, [CallerMemberName] string? propertyName = null)
