@@ -1,0 +1,4 @@
+<Solution>
+  <Project Path="Keebs.Tests/Keebs.Tests.csproj" />
+  <Project Path="Keebs/Keebs.csproj" />
+</Solution>

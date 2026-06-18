@@ -1,0 +1,148 @@
+<Window x:Class="Keebs.MainWindow"
+        xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+        xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+        Title="Keebs"
+        Width="980"
+        Height="360"
+        MinWidth="720"
+        MinHeight="300"
+        WindowStartupLocation="CenterScreen"
+        WindowStyle="ToolWindow"
+        ResizeMode="CanResizeWithGrip"
+        ShowActivated="False"
+        Topmost="True"
+        Icon="Assets/keebs.ico"
+        Background="#15171C">
+    <Window.Resources>
+        <Style x:Key="KeyboardButton" TargetType="Button">
+            <Setter Property="Focusable" Value="False" />
+            <Setter Property="MinHeight" Value="46" />
+            <Setter Property="Margin" Value="4" />
+            <Setter Property="Padding" Value="10,6" />
+            <Setter Property="FontSize" Value="18" />
+            <Setter Property="FontWeight" Value="SemiBold" />
+            <Setter Property="Foreground" Value="#F5F7FA" />
+            <Setter Property="Background" Value="#2C3038" />
+            <Setter Property="BorderBrush" Value="#404653" />
+            <Setter Property="BorderThickness" Value="1" />
+            <Setter Property="Template">
+                <Setter.Value>
+                    <ControlTemplate TargetType="Button">
+                        <Border Background="{TemplateBinding Background}"
+                                BorderBrush="{TemplateBinding BorderBrush}"
+                                BorderThickness="{TemplateBinding BorderThickness}"
+                                CornerRadius="6">
+                            <ContentPresenter HorizontalAlignment="Center"
+                                              VerticalAlignment="Center" />
+                        </Border>
+                        <ControlTemplate.Triggers>
+                            <Trigger Property="IsMouseOver" Value="True">
+                                <Setter Property="Background" Value="#39404C" />
+                            </Trigger>
+                            <Trigger Property="IsPressed" Value="True">
+                                <Setter Property="Background" Value="#4A5261" />
+                            </Trigger>
+                        </ControlTemplate.Triggers>
+                    </ControlTemplate>
+                </Setter.Value>
+            </Setter>
+        </Style>
+
+        <Style x:Key="SuggestionButton" TargetType="Button" BasedOn="{StaticResource KeyboardButton}">
+            <Setter Property="MinHeight" Value="40" />
+            <Setter Property="FontSize" Value="16" />
+            <Setter Property="FontWeight" Value="Medium" />
+            <Setter Property="Background" Value="#243849" />
+            <Setter Property="BorderBrush" Value="#3B5D78" />
+        </Style>
+
+        <Style x:Key="UtilityButton" TargetType="Button" BasedOn="{StaticResource KeyboardButton}">
+            <Setter Property="Background" Value="#36313A" />
+            <Setter Property="BorderBrush" Value="#554A5E" />
+            <Setter Property="FontSize" Value="15" />
+        </Style>
+    </Window.Resources>
+
+    <Grid Margin="12">
+        <Grid.RowDefinitions>
+            <RowDefinition Height="Auto" />
+            <RowDefinition Height="*" />
+            <RowDefinition Height="Auto" />
+        </Grid.RowDefinitions>
+
+        <Grid Grid.Row="0" Margin="0,0,0,8">
+            <Grid.ColumnDefinitions>
+                <ColumnDefinition Width="*" />
+                <ColumnDefinition Width="Auto" />
+            </Grid.ColumnDefinitions>
+
+            <ItemsControl x:Name="SuggestionStrip">
+                <ItemsControl.ItemsPanel>
+                    <ItemsPanelTemplate>
+                        <UniformGrid Columns="3" />
+                    </ItemsPanelTemplate>
+                </ItemsControl.ItemsPanel>
+                <ItemsControl.ItemTemplate>
+                    <DataTemplate>
+                        <Button Style="{StaticResource SuggestionButton}"
+                                Content="{Binding}"
+                                Click="Suggestion_Click" />
+                    </DataTemplate>
+                </ItemsControl.ItemTemplate>
+            </ItemsControl>
+
+            <Border Grid.Column="1"
+                    Margin="8,4,4,4"
+                    Padding="10,0"
+                    MinWidth="190"
+                    CornerRadius="6"
+                    Background="#24272E"
+                    BorderBrush="#3B404A"
+                    BorderThickness="1">
+                <TextBlock x:Name="PrivacyStatus"
+                           VerticalAlignment="Center"
+                           FontSize="13"
+                           Foreground="#B8C0CC"
+                           TextAlignment="Center" />
+            </Border>
+        </Grid>
+
+        <Grid x:Name="KeyboardGrid" Grid.Row="1">
+            <Grid.RowDefinitions>
+                <RowDefinition Height="*" />
+                <RowDefinition Height="*" />
+                <RowDefinition Height="*" />
+                <RowDefinition Height="*" />
+            </Grid.RowDefinitions>
+        </Grid>
+
+        <Grid Grid.Row="2" Margin="0,8,0,0">
+            <Grid.ColumnDefinitions>
+                <ColumnDefinition Width="Auto" />
+                <ColumnDefinition Width="*" />
+                <ColumnDefinition Width="Auto" />
+            </Grid.ColumnDefinitions>
+
+            <CheckBox x:Name="PrivateModeToggle"
+                      Grid.Column="0"
+                      VerticalAlignment="Center"
+                      Margin="6,0,14,0"
+                      Foreground="#E9EDF4"
+                      Content="Private"
+                      Checked="PrivateMode_Changed"
+                      Unchecked="PrivateMode_Changed" />
+
+            <TextBlock Grid.Column="1"
+                       VerticalAlignment="Center"
+                       FontSize="12"
+                       Foreground="#8F98A8"
+                       Text="Predictions are local. Sensitive fields get raw key input only." />
+
+            <Button Grid.Column="2"
+                    Style="{StaticResource UtilityButton}"
+                    MinWidth="76"
+                    Content="Close"
+                    Click="Close_Click" />
+        </Grid>
+    </Grid>
+</Window>

@@ -1,0 +1,53 @@
+<Wix xmlns="http://wixtoolset.org/schemas/v4/wxs">
+  <Package
+    Name="Keebs"
+    Manufacturer="Keebs"
+    Version="0.1.0.0"
+    UpgradeCode="8b4c3fe3-0a14-44e2-afdb-89e13f936324"
+    Scope="perMachine">
+
+    <MajorUpgrade DowngradeErrorMessage="A newer version of Keebs is already installed." />
+    <MediaTemplate EmbedCab="yes" />
+    <Icon Id="KeebsIcon" SourceFile="$(var.ProjectDir)\Keebs\Assets\keebs.ico" />
+    <Property Id="ARPPRODUCTICON" Value="KeebsIcon" />
+
+    <StandardDirectory Id="ProgramFilesFolder">
+      <Directory Id="INSTALLFOLDER" Name="Keebs">
+        <Component Id="KeebsExecutable" Guid="8056cd8d-7871-4a39-b69b-3807367c0be3">
+          <File
+            Id="KeebsExe"
+            Source="$(var.PublishDir)\Keebs.exe"
+            KeyPath="yes" />
+          <Shortcut
+            Id="StartMenuShortcut"
+            Directory="ApplicationProgramsFolder"
+            Name="Keebs"
+            Description="Open Keebs on-screen keyboard"
+            WorkingDirectory="INSTALLFOLDER"
+            Icon="KeebsIcon"
+            Advertise="yes" />
+        </Component>
+      </Directory>
+    </StandardDirectory>
+
+    <StandardDirectory Id="ProgramMenuFolder">
+      <Directory Id="ApplicationProgramsFolder" Name="Keebs">
+        <Component Id="StartMenuFolderCleanup" Guid="a4a1c414-81e7-45d1-968c-7eb5213c03c5">
+          <RemoveFolder Id="RemoveApplicationProgramsFolder" On="uninstall" />
+          <RegistryValue
+            Root="HKLM"
+            Key="Software\Keebs"
+            Name="StartMenuFolder"
+            Type="integer"
+            Value="1"
+            KeyPath="yes" />
+        </Component>
+      </Directory>
+    </StandardDirectory>
+
+    <Feature Id="MainFeature" Title="Keebs" Level="1">
+      <ComponentRef Id="KeebsExecutable" />
+      <ComponentRef Id="StartMenuFolderCleanup" />
+    </Feature>
+  </Package>
+</Wix>
