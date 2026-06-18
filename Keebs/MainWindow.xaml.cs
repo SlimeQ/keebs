@@ -1,4 +1,6 @@
 using System.Collections.ObjectModel;
+using System.ComponentModel;
+using System.Runtime.CompilerServices;
 using System.Runtime.InteropServices;
 using System.Windows;
 using System.Windows.Controls;
@@ -7,7 +9,7 @@ using System.Windows.Interop;
 
 namespace Keebs;
 
-public partial class MainWindow : Window
+public partial class MainWindow : Window, INotifyPropertyChanged
 {
     private readonly ObservableCollection<string> _suggestions = [];
     private readonly TextPredictionEngine _predictionEngine = new();
@@ -15,10 +17,14 @@ public partial class MainWindow : Window
     private readonly SensitiveInputMonitor _sensitiveInputMonitor = new();
     private bool _shift;
     private bool _privateMode;
+    private double _keyFontSize = 16;
+    private double _statusFontSize = 12;
+    private Thickness _outerMargin = new(12);
 
     public MainWindow()
     {
         InitializeComponent();
+        DataContext = this;
         SuggestionStrip.ItemsSource = _suggestions;
         BuildKeyboard();
 
@@ -33,8 +39,30 @@ public partial class MainWindow : Window
             _sensitiveInputMonitor.Start();
             RefreshPrivacyState();
             RefreshSuggestions();
+            UpdateScale();
         };
         Closed += (_, _) => _sensitiveInputMonitor.Dispose();
+        SizeChanged += (_, _) => UpdateScale();
+    }
+
+    public event PropertyChangedEventHandler? PropertyChanged;
+
+    public double KeyFontSize
+    {
+        get => _keyFontSize;
+        private set => SetField(ref _keyFontSize, value);
+    }
+
+    public double StatusFontSize
+    {
+        get => _statusFontSize;
+        private set => SetField(ref _statusFontSize, value);
+    }
+
+    public Thickness OuterMargin
+    {
+        get => _outerMargin;
+        private set => SetField(ref _outerMargin, value);
     }
 
     protected override void OnSourceInitialized(EventArgs e)
@@ -76,7 +104,7 @@ public partial class MainWindow : Window
         {
             Rows = 1,
             Columns = labels.Count,
-            Margin = new Thickness(rowIndex == 1 ? 24 : 0, 0, rowIndex == 1 ? 24 : 0, 0)
+            Margin = GetRowMargin(rowIndex)
         };
 
         foreach (var label in labels)
@@ -239,6 +267,52 @@ public partial class MainWindow : Window
     {
         PrivacyStatus.Text = "Input failed";
         PrivacyStatus.ToolTip = exception.Message;
+    }
+
+    private void UpdateScale()
+    {
+        var width = ActualWidth > 0 ? ActualWidth : Width;
+        var height = ActualHeight > 0 ? ActualHeight : Height;
+        var compactness = Math.Min(width / 980, height / 360);
+
+        KeyFontSize = Math.Clamp(18 * compactness, 11, 18);
+        StatusFontSize = Math.Clamp(12 * compactness, 9, 12);
+        var margin = Math.Clamp(12 * compactness, 5, 12);
+        OuterMargin = new Thickness(margin);
+
+        foreach (var row in KeyboardGrid.Children.OfType<UniformGrid>())
+        {
+            row.Margin = GetRowMargin(Grid.GetRow(row));
+
+            foreach (var button in row.Children.OfType<Button>())
+            {
+                var keyMargin = Math.Clamp(4 * compactness, 1.5, 4);
+                button.Margin = new Thickness(keyMargin);
+                button.MinHeight = Math.Clamp(46 * compactness, 24, 46);
+            }
+        }
+
+        FooterHint.Visibility = width < 620 || height < 250
+            ? Visibility.Collapsed
+            : Visibility.Visible;
+    }
+
+    private Thickness GetRowMargin(int rowIndex)
+    {
+        var width = ActualWidth > 0 ? ActualWidth : Width;
+        var inset = rowIndex == 1 ? Math.Clamp(width * 0.025, 6, 24) : 0;
+        return new Thickness(inset, 0, inset, 0);
+    }
+
+    private void SetField<T>(ref T field, T value, [CallerMemberName] string? propertyName = null)
+    {
+        if (EqualityComparer<T>.Default.Equals(field, value))
+        {
+            return;
+        }
+
+        field = value;
+        PropertyChanged?.Invoke(this, new PropertyChangedEventArgs(propertyName));
     }
 
     private static class NativeMethods
