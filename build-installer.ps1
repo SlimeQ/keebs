@@ -30,7 +30,13 @@ if ($LASTEXITCODE -ne 0) {
     throw "dotnet publish failed with exit code $LASTEXITCODE"
 }
 
-dotnet wix --acceptEula true build $wxs `
+dotnet wix eula accept wix7
+
+if ($LASTEXITCODE -ne 0) {
+    throw "wix eula failed with exit code $LASTEXITCODE"
+}
+
+dotnet wix build $wxs `
     -arch x64 `
     -d "ProjectDir=$root" `
     -d "PublishDir=$publishDir" `
