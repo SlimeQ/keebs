@@ -194,7 +194,7 @@
                               Color="#050608" />
         </Border.Effect>
 
-    <Grid>
+    <Grid x:Name="RootGrid">
         <Grid.RowDefinitions>
             <RowDefinition Height="Auto" />
             <RowDefinition Height="*" />
@@ -212,13 +212,22 @@
                     <DataTemplate>
                         <Button Style="{StaticResource SuggestionButton}"
                                 Content="{Binding}"
-                                Click="Suggestion_Click" />
+                                Click="Suggestion_Click">
+                            <Button.ContextMenu>
+                                <ContextMenu>
+                                    <MenuItem Header="Remove from suggestions"
+                                              Click="RemoveSuggestion_Click" />
+                                </ContextMenu>
+                            </Button.ContextMenu>
+                        </Button>
                     </DataTemplate>
                 </ItemsControl.ItemTemplate>
             </ItemsControl>
         </Grid>
 
-        <Border Grid.Row="1"
+        <Border x:Name="KeyboardDeck"
+                Grid.Row="1"
+                VerticalAlignment="Top"
                 Padding="{Binding RelativeSource={RelativeSource AncestorType=Window}, Path=DeckPadding}"
                 CornerRadius="12"
                 Background="{StaticResource KeyboardDeckBrush}"
@@ -242,6 +251,7 @@
 
         <Grid x:Name="FooterBar" Grid.Row="2" Margin="0,7,0,0">
             <Grid.ColumnDefinitions>
+                <ColumnDefinition Width="Auto" />
                 <ColumnDefinition Width="Auto" />
                 <ColumnDefinition Width="Auto" />
                 <ColumnDefinition Width="Auto" />
@@ -307,7 +317,16 @@
                     ToolTip="Check for updates"
                     Click="Update_Click" />
 
-            <TextBlock Grid.Column="4"
+            <Button x:Name="TypingTestButton"
+                    Grid.Column="4"
+                    Style="{StaticResource FooterButton}"
+                    Margin="0,0,10,0"
+                    FontSize="{Binding RelativeSource={RelativeSource AncestorType=Window}, Path=StatusFontSize}"
+                    Content="Test"
+                    ToolTip="Open typing-run harness"
+                    Click="TypingTest_Click" />
+
+            <TextBlock Grid.Column="5"
                        x:Name="FooterHint"
                        VerticalAlignment="Center"
                        FontSize="{Binding RelativeSource={RelativeSource AncestorType=Window}, Path=StatusFontSize}"

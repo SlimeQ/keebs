@@ -25,6 +25,46 @@ public sealed class TextSessionTests
     }
 
     [Fact]
+    public void SeedFromTextBeforeCaretRequestsBoundaryAfterPunctuation()
+    {
+        var session = new TextSession();
+
+        session.SeedFromTextBeforeCaret("hello.");
+
+        Assert.True(session.NeedsWordBoundaryBeforeNextWord);
+    }
+
+    [Fact]
+    public void SeedFromTextBeforeCaretDoesNotRequestBoundaryAfterWhitespace()
+    {
+        var session = new TextSession();
+
+        session.SeedFromTextBeforeCaret("hello. ");
+
+        Assert.False(session.NeedsWordBoundaryBeforeNextWord);
+    }
+
+    [Fact]
+    public void TypeTextRequestsBoundaryAfterPunctuation()
+    {
+        var session = new TextSession();
+
+        session.TypeText("hello.");
+
+        Assert.True(session.NeedsWordBoundaryBeforeNextWord);
+    }
+
+    [Fact]
+    public void TypeTextClearsBoundaryRequestAfterWhitespace()
+    {
+        var session = new TextSession();
+
+        session.TypeText("hello. ");
+
+        Assert.False(session.NeedsWordBoundaryBeforeNextWord);
+    }
+
+    [Fact]
     public void ResetPredictionContextClearsSeededPreviousWords()
     {
         var session = new TextSession();

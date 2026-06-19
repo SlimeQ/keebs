@@ -3,6 +3,7 @@ using System.ComponentModel;
 using System.Diagnostics;
 using System.Runtime.CompilerServices;
 using System.Runtime.InteropServices;
+using System.Text;
 using System.Threading;
 using System.Threading.Tasks;
 using System.Windows;
@@ -10,25 +11,34 @@ using System.Windows.Controls;
 using System.Windows.Input;
 using System.Windows.Interop;
 using System.Windows.Media;
+using System.Windows.Threading;
 
 namespace Keebs;
 
 public partial class MainWindow : Window, INotifyPropertyChanged
 {
     private static readonly TimeSpan FocusedContextReadTimeout = TimeSpan.FromMilliseconds(300);
-    private const double SwipeTapThreshold = 12;
+    private const double SwipeTapThreshold = 20;
+    private const double SwipeActivationKeyDistance = 1.2;
     private const int MinimumSwipeLetters = 2;
+    private const int MinimumActiveSwipeLetters = 3;
     private const int SwipeCandidateLimit = 192;
-    private const double SwipeMaximumGeometryScore = 0.78;
+    private const double SwipeMaximumGeometryScore = 5.0;
+    private const double SwipeStrongGeometryScore = 0.55;
     private const double SwipeMinimumScoreMargin = 0.14;
+    private const double SwipeContextScoreBonus = 4.0;
     private readonly ObservableCollection<string> _suggestions = [];
     private readonly TextPredictionEngine _predictionEngine;
     private readonly TextSession _textSession = new();
     private readonly SensitiveInputMonitor _sensitiveInputMonitor = new();
     private readonly PhysicalKeyboardMonitor _physicalKeyboardMonitor = new();
     private readonly GitHubReleaseUpdater _releaseUpdater = new();
+    private readonly SwipeTraceRecorder _swipeTraceRecorder = new();
+    private TypingTestWindow? _typingTestWindow;
+    private readonly bool _startFocusMonitors;
     private readonly List<char> _swipeLetters = [];
     private readonly List<Point> _swipePoints = [];
+    private readonly StringBuilder _inputLineBuffer = new();
     private static readonly FontFamily TextKeyFontFamily = new("Segoe UI Variable Text, Segoe UI");
     private static readonly FontFamily IconKeyFontFamily = new("Segoe UI Symbol, Segoe UI");
     private TouchDevice? _activeTouchDevice;
@@ -39,6 +49,7 @@ public partial class MainWindow : Window, INotifyPropertyChanged
     private bool _windows;
     private bool _predictionsEnabled = true;
     private bool _learningEnabled = true;
+    private bool _focusedTextContextSensitive;
     private bool _physicalSelectionActive;
     private bool _pointerGestureActive;
     private bool _swipeGestureActive;
@@ -61,8 +72,14 @@ public partial class MainWindow : Window, INotifyPropertyChanged
     }
 
     internal MainWindow(TextPredictionEngine predictionEngine)
+        : this(predictionEngine, startFocusMonitors: true)
+    {
+    }
+
+    internal MainWindow(TextPredictionEngine predictionEngine, bool startFocusMonitors)
     {
         _predictionEngine = predictionEngine;
+        _startFocusMonitors = startFocusMonitors;
         InitializeComponent();
         DataContext = this;
         SuggestionStrip.ItemsSource = _suggestions;
@@ -98,17 +115,26 @@ public partial class MainWindow : Window, INotifyPropertyChanged
         };
         Loaded += (_, _) =>
         {
-            _sensitiveInputMonitor.Start();
-            _physicalKeyboardMonitor.Start();
-            RefreshFocusedInputState();
+            if (_startFocusMonitors)
+            {
+                _sensitiveInputMonitor.Start();
+                _physicalKeyboardMonitor.Start();
+                RefreshFocusedInputState();
+            }
+
             UpdateScale();
+            ScheduleScaleUpdate();
         };
         Closed += (_, _) =>
         {
             _physicalKeyboardMonitor.Dispose();
             _sensitiveInputMonitor.Dispose();
         };
-        SizeChanged += (_, _) => UpdateScale();
+        SizeChanged += (_, _) =>
+        {
+            UpdateScale();
+            ScheduleScaleUpdate();
+        };
     }
 
     public event PropertyChangedEventHandler? PropertyChanged;
@@ -398,15 +424,47 @@ public partial class MainWindow : Window, INotifyPropertyChanged
                     return;
                 case "Backspace":
                     SendVirtualKey(key);
+                    if (PredictionsSuppressed)
+                    {
+                        break;
+                    }
+
                     _textSession.Backspace();
+                    TrackInputBackspace();
                     ScheduleFocusedInputResync(allowEmptyContext: false);
                     break;
                 case "Tab":
                     SendVirtualKey(key);
+                    var wasTabSuppressed = PredictionsSuppressed;
+                    TrackSubmittedInputLine();
+                    if (wasTabSuppressed)
+                    {
+                        ClearSensitiveTextContextAfterSubmission();
+                        break;
+                    }
+
+                    if (PredictionsSuppressed)
+                    {
+                        break;
+                    }
+
                     LearnTypedText(_textSession.CommitBoundary());
                     break;
                 case "Enter":
                     SendVirtualKey(key);
+                    var wasEnterSuppressed = PredictionsSuppressed;
+                    TrackSubmittedInputLine();
+                    if (wasEnterSuppressed)
+                    {
+                        ClearSensitiveTextContextAfterSubmission();
+                        break;
+                    }
+
+                    if (PredictionsSuppressed)
+                    {
+                        break;
+                    }
+
                     LearnTypedText(_textSession.CommitBoundary());
                     break;
                 case "Space":
@@ -518,20 +576,19 @@ public partial class MainWindow : Window, INotifyPropertyChanged
             return;
         }
 
-        if (!_swipeGestureActive &&
-            GetDistance(_pointerDownPosition, position) >= SwipeTapThreshold)
+        AddSwipePoint(position);
+        AddSwipeKeyAt(position);
+
+        if (!_swipeGestureActive && ShouldActivateSwipeGesture(position))
         {
             _swipeGestureActive = true;
             SwipeTrailLine.Opacity = 0.82;
+            RefreshSwipeSuggestions();
         }
 
         if (_swipeGestureActive)
         {
-            AddSwipePoint(position);
-            if (GetKeyAt(position) is { } key)
-            {
-                AddSwipeKey(key);
-            }
+            RefreshSwipeSuggestions();
         }
 
         e.Handled = true;
@@ -544,13 +601,15 @@ public partial class MainWindow : Window, INotifyPropertyChanged
             return;
         }
 
-        if (_swipeGestureActive && GetKeyAt(position) is { } key)
+        if (_swipeGestureActive)
         {
-            AddSwipeKey(key);
+            AddSwipePoint(position);
+            AddSwipeKeyAt(position);
         }
 
         KeyboardGrid.ReleaseMouseCapture();
 
+        var wasSwipeGesture = _swipeGestureActive;
         if (_swipeGestureActive)
         {
             var committedSwipe = TryCommitSwipe();
@@ -565,6 +624,11 @@ public partial class MainWindow : Window, INotifyPropertyChanged
         }
 
         ResetPointerGesture();
+        if (wasSwipeGesture)
+        {
+            RefreshSuggestions();
+        }
+
         e.Handled = true;
     }
 
@@ -579,6 +643,23 @@ public partial class MainWindow : Window, INotifyPropertyChanged
         return GetKeyAt(position)?.Id == _pointerDownKey.Id;
     }
 
+    private bool ShouldActivateSwipeGesture(Point position)
+    {
+        if (_swipeLetters.Distinct().Count() < MinimumActiveSwipeLetters)
+        {
+            return false;
+        }
+
+        var keyUnit = GetAverageLetterKeySize();
+        if (keyUnit <= 0)
+        {
+            return false;
+        }
+
+        var minimumDistance = Math.Max(SwipeTapThreshold, keyUnit * SwipeActivationKeyDistance);
+        return GetDistance(_pointerDownPosition, position) >= minimumDistance;
+    }
+
     private void AddSwipePoint(Point position)
     {
         if (SwipeTrailLine.Points.Count == 0 ||
@@ -589,43 +670,75 @@ public partial class MainWindow : Window, INotifyPropertyChanged
         }
     }
 
-    private void AddSwipeKey(KeySpec key)
+    private bool AddSwipeKey(KeySpec key)
     {
         if (key.Text is not { Length: 1 } text || !char.IsLetter(text[0]))
         {
-            return;
+            return false;
         }
 
         var letter = char.ToLowerInvariant(text[0]);
         if (_swipeLetters.Count == 0 || _swipeLetters[^1] != letter)
         {
             _swipeLetters.Add(letter);
+            return true;
+        }
+
+        return false;
+    }
+
+    private bool AddSwipeKeyAt(Point position)
+    {
+        return TryGetNearestSwipeKey(position, out var key) && AddSwipeKey(key);
+    }
+
+    private void RefreshSwipeSuggestions()
+    {
+        var swipeSuggestions = GetCurrentSwipeSuggestions(_textSession.Context);
+        if (swipeSuggestions.Count == 0)
+        {
+            return;
+        }
+
+        _suggestions.Clear();
+        foreach (var suggestion in swipeSuggestions)
+        {
+            _suggestions.Add(suggestion);
         }
     }
 
     private bool TryCommitSwipe()
     {
         if (PredictionsSuppressed || _control || _alt || _windows ||
-            _swipeLetters.Distinct().Count() < MinimumSwipeLetters)
+            _swipeLetters.Distinct().Count() < MinimumActiveSwipeLetters)
         {
             return false;
         }
 
-        var suggestion = GetBestSwipeSuggestion();
+        var tracedLetters = new string([.. _swipeLetters]);
+        var predictionContext = _textSession.Context;
+        var candidateDiagnostics = GetSwipeCandidateDiagnostics(tracedLetters);
+        var suggestion = GetCurrentSwipeSuggestions(predictionContext).FirstOrDefault();
         if (string.IsNullOrWhiteSpace(suggestion))
         {
+            RecordSwipeTrace(tracedLetters, null, null, committed: false, predictionContext, candidateDiagnostics);
             return false;
         }
 
-        var output = GetSwipeOutputText(suggestion);
+        var prefix = _textSession.Context.CurrentWord.Length > 0 || _textSession.NeedsWordBoundaryBeforeNextWord
+            ? " "
+            : string.Empty;
+        var output = $"{prefix}{GetSwipeOutputText(suggestion)}";
         try
         {
             KeyboardInput.SendText($"{output} ");
             LearnTypedText(_textSession.TypeText($"{output} "));
+            RecordSwipeTrace(tracedLetters, suggestion, output, committed: true, predictionContext, candidateDiagnostics);
         }
         catch (InvalidOperationException ex)
         {
             ShowInputError(ex);
+            RecordSwipeTrace(tracedLetters, suggestion, output, committed: false, predictionContext, candidateDiagnostics);
             return false;
         }
 
@@ -634,26 +747,98 @@ public partial class MainWindow : Window, INotifyPropertyChanged
         return true;
     }
 
-    private string? GetBestSwipeSuggestion()
+    private IReadOnlyList<SwipeTraceCandidate> GetSwipeCandidateDiagnostics(string tracedLetters)
     {
-        if (_swipePoints.Count < 4)
+        var keyUnit = GetAverageLetterKeySize();
+        return _predictionEngine
+            .GetSwipeCandidates(tracedLetters, _textSession.Context, 12)
+            .Select((candidate, index) => new SwipeTraceCandidate(
+                candidate,
+                keyUnit <= 0 ? null : GetSwipeCandidateScore(candidate, keyUnit, index)))
+            .ToArray();
+    }
+
+    private void RecordSwipeTrace(
+        string tracedLetters,
+        string? suggestion,
+        string? outputText,
+        bool committed,
+        PredictionContext context,
+        IReadOnlyList<SwipeTraceCandidate> candidates)
+    {
+        _swipeTraceRecorder.Append(new SwipeTraceEvent(
+            DateTimeOffset.Now,
+            tracedLetters,
+            suggestion,
+            outputText,
+            committed,
+            context.CurrentWord,
+            context.PreviousWords,
+            candidates));
+    }
+
+    private IReadOnlyList<string> GetCurrentSwipeSuggestions(PredictionContext context)
+    {
+        if (PredictionsSuppressed || _swipeLetters.Distinct().Count() < MinimumActiveSwipeLetters)
         {
-            return null;
+            return [];
         }
 
         var tracedLetters = new string([.. _swipeLetters]);
+        var geometrySuggestions = GetGeometryRankedSwipeSuggestions(tracedLetters, context);
+        return geometrySuggestions.Count > 0
+            ? geometrySuggestions
+            : GetLanguageRankedSwipeSuggestions(tracedLetters, context);
+    }
+
+    private string? GetBestSwipeSuggestion()
+    {
+        return GetGeometryRankedSwipeSuggestions(new string([.. _swipeLetters]), _textSession.Context).FirstOrDefault();
+    }
+
+    private IReadOnlyList<string> GetLanguageRankedSwipeSuggestions(string tracedLetters, PredictionContext context)
+    {
+        return _predictionEngine.GetSwipeSuggestions(tracedLetters, context)
+            .Take(4)
+            .ToArray();
+    }
+
+    private IReadOnlyList<string> GetGeometryRankedSwipeSuggestions(string tracedLetters, PredictionContext context)
+    {
+        if (_swipePoints.Count < 2)
+        {
+            return [];
+        }
+
         var keyUnit = GetAverageLetterKeySize();
         if (keyUnit <= 0)
         {
-            return null;
+            return [];
         }
 
-        var ranked = _predictionEngine
-            .GetSwipeCandidates(tracedLetters, _textSession.Context, SwipeCandidateLimit)
-            .Select(candidate => new
+        if (TryGetNoisyShortSwipeOverride(tracedLetters, out var shortSuggestion))
+        {
+            return [shortSuggestion];
+        }
+
+        var candidates = _predictionEngine
+            .GetSwipeCandidates(tracedLetters, context, SwipeCandidateLimit)
+            .ToArray();
+
+        if (TryGetShortLanguageSwipeOverride(candidates, out var languageSuggestion))
+        {
+            return candidates
+                .Where(candidate => candidate != languageSuggestion)
+                .Prepend(languageSuggestion)
+                .Take(4)
+                .ToArray();
+        }
+
+        var ranked = candidates
+            .Select((candidate, index) => new
             {
                 Candidate = candidate,
-                Score = TryGetSwipeGeometryScore(candidate, keyUnit) + GetSwipeLetterMismatchPenalty(candidate)
+                Score = GetSwipeCandidateScore(candidate, keyUnit, index)
             })
             .Where(candidate => candidate.Score.HasValue)
             .OrderBy(candidate => candidate.Score!.Value)
@@ -662,16 +847,100 @@ public partial class MainWindow : Window, INotifyPropertyChanged
 
         if (ranked.Length == 0 || ranked[0].Score!.Value > SwipeMaximumGeometryScore)
         {
-            return null;
+            return [];
         }
 
         if (ranked.Length > 1 &&
+            ranked[0].Score!.Value > SwipeStrongGeometryScore &&
             ranked[1].Score!.Value - ranked[0].Score!.Value < SwipeMinimumScoreMargin)
+        {
+            var languageSuggestions = GetLanguageRankedSwipeSuggestions(tracedLetters, context);
+            if (languageSuggestions.Count > 0 &&
+                languageSuggestions[0].Equals(ranked[0].Candidate, StringComparison.OrdinalIgnoreCase))
+            {
+                return languageSuggestions;
+            }
+        }
+
+        return ranked
+            .Select(candidate => candidate.Candidate)
+            .Take(4)
+            .ToArray();
+    }
+
+    private static bool TryGetNoisyShortSwipeOverride(string tracedLetters, out string suggestion)
+    {
+        suggestion = string.Empty;
+        var tracePattern = NormalizeSwipeLetters(tracedLetters);
+        if (tracePattern.Length is < 3 or > 10)
+        {
+            return false;
+        }
+
+        foreach (var word in new[] { "is", "it", "if", "in", "ok", "on", "or", "we" })
+        {
+            if (tracePattern[0] == word[0] &&
+                tracePattern[^1] == word[^1] &&
+                IsOrderedSubsequence(word, tracePattern))
+            {
+                suggestion = word;
+                return true;
+            }
+        }
+
+        return false;
+    }
+
+    private bool TryGetShortLanguageSwipeOverride(IReadOnlyList<string> candidates, out string suggestion)
+    {
+        suggestion = string.Empty;
+
+        if (candidates.Count == 0)
+        {
+            return false;
+        }
+
+        var tracePattern = new string([.. _swipeLetters]);
+        var candidatePattern = NormalizeSwipeLetters(candidates[0]);
+        if (tracePattern.Length is < 3 or > 5 || candidatePattern.Length is < 3 or > 6)
+        {
+            return false;
+        }
+
+        if (GetDamerauLevenshteinDistance(tracePattern, candidatePattern) > 1 ||
+            Math.Abs(tracePattern.Length - candidatePattern.Length) > 1)
+        {
+            return false;
+        }
+
+        suggestion = candidates[0];
+        return true;
+    }
+
+    private double? GetSwipeCandidateScore(string candidate, double keyUnit, int candidateRank)
+    {
+        var geometryScore = TryGetSwipeGeometryScore(candidate, keyUnit);
+        if (!geometryScore.HasValue)
         {
             return null;
         }
 
-        return ranked[0].Candidate;
+        return geometryScore.Value +
+               GetSwipeLetterMismatchPenalty(candidate) +
+               (candidateRank * 0.018) -
+               GetSwipeContextScoreBonus(candidate);
+    }
+
+    private double GetSwipeContextScoreBonus(string candidate)
+    {
+        var context = _textSession.Context;
+        var previousWord = context.CurrentWord.Length > 0
+            ? context.CurrentWord
+            : context.PreviousWord;
+
+        return _predictionEngine.GetContextualNextWordScore(previousWord, candidate) > 0
+            ? SwipeContextScoreBonus
+            : 0;
     }
 
     private double? TryGetSwipeGeometryScore(string candidate, double keyUnit)
@@ -714,9 +983,47 @@ public partial class MainWindow : Window, INotifyPropertyChanged
             return 0;
         }
 
-        var editDistance = GetLevenshteinDistance(tracePattern, candidatePattern);
+        var editDistance = GetDamerauLevenshteinDistance(tracePattern, candidatePattern);
         var ignoredLetters = Math.Max(0, tracePattern.Length - candidatePattern.Length - 2);
-        return (editDistance * 0.045) + (ignoredLetters * 0.11);
+        var lengthDifference = Math.Abs(tracePattern.Length - candidatePattern.Length);
+
+        if (IsOrderedSubsequence(candidatePattern, tracePattern))
+        {
+            return Math.Min(0.18, Math.Max(0, tracePattern.Length - candidatePattern.Length) * 0.006);
+        }
+
+        if (IsOrderedSubsequence(tracePattern, candidatePattern))
+        {
+            return Math.Min(0.22, Math.Max(0, candidatePattern.Length - tracePattern.Length) * 0.035);
+        }
+
+        return (editDistance * 0.055) + (ignoredLetters * 0.11) + (lengthDifference * 0.04);
+    }
+
+    private static bool IsOrderedSubsequence(string expectedLetters, string tracedLetters)
+    {
+        if (expectedLetters.Length == 0)
+        {
+            return true;
+        }
+
+        var expectedIndex = 0;
+
+        foreach (var letter in tracedLetters)
+        {
+            if (letter != expectedLetters[expectedIndex])
+            {
+                continue;
+            }
+
+            expectedIndex++;
+            if (expectedIndex == expectedLetters.Length)
+            {
+                return true;
+            }
+        }
+
+        return false;
     }
 
     private static string NormalizeSwipeLetters(string value)
@@ -767,6 +1074,45 @@ public partial class MainWindow : Window, INotifyPropertyChanged
         return previous[right.Length];
     }
 
+    private static int GetDamerauLevenshteinDistance(string left, string right)
+    {
+        var previousPrevious = new int[right.Length + 1];
+        var previous = new int[right.Length + 1];
+        var current = new int[right.Length + 1];
+
+        for (var column = 0; column <= right.Length; column++)
+        {
+            previous[column] = column;
+        }
+
+        for (var row = 1; row <= left.Length; row++)
+        {
+            current[0] = row;
+
+            for (var column = 1; column <= right.Length; column++)
+            {
+                var substitutionCost = left[row - 1] == right[column - 1] ? 0 : 1;
+                var distance = Math.Min(
+                    Math.Min(current[column - 1] + 1, previous[column] + 1),
+                    previous[column - 1] + substitutionCost);
+
+                if (row > 1 &&
+                    column > 1 &&
+                    left[row - 1] == right[column - 2] &&
+                    left[row - 2] == right[column - 1])
+                {
+                    distance = Math.Min(distance, previousPrevious[column - 2] + 1);
+                }
+
+                current[column] = distance;
+            }
+
+            (previousPrevious, previous, current) = (previous, current, previousPrevious);
+        }
+
+        return previous[right.Length];
+    }
+
     private IReadOnlyList<Point> GetCandidateSwipePath(string candidate)
     {
         var points = new List<Point>();
@@ -807,6 +1153,41 @@ public partial class MainWindow : Window, INotifyPropertyChanged
 
         center = default;
         return false;
+    }
+
+    private bool TryGetNearestSwipeKey(Point position, out KeySpec key)
+    {
+        key = null!;
+        var keyUnit = GetAverageLetterKeySize();
+        if (keyUnit <= 0)
+        {
+            return false;
+        }
+
+        var maximumDistance = keyUnit * 1.05;
+        var nearestDistance = double.MaxValue;
+
+        foreach (var button in GetKeyButtons())
+        {
+            if (button.Tag is not KeySpec { Text.Length: 1 } candidate ||
+                !char.IsLetter(candidate.Text[0]))
+            {
+                continue;
+            }
+
+            var center = button.TransformToAncestor(KeyboardGrid)
+                .Transform(new Point(button.ActualWidth / 2, button.ActualHeight / 2));
+            var distance = GetDistance(position, center);
+            if (distance >= nearestDistance)
+            {
+                continue;
+            }
+
+            nearestDistance = distance;
+            key = candidate;
+        }
+
+        return nearestDistance <= maximumDistance;
     }
 
     private double GetAverageLetterKeySize()
@@ -953,6 +1334,12 @@ public partial class MainWindow : Window, INotifyPropertyChanged
         }
 
         KeyboardInput.SendText(text);
+        if (PredictionsSuppressed)
+        {
+            return;
+        }
+
+        TrackInputText(text);
         LearnTypedText(_textSession.TypeText(text));
     }
 
@@ -987,14 +1374,76 @@ public partial class MainWindow : Window, INotifyPropertyChanged
         });
     }
 
-    internal void ApplyPhysicalKeyToPredictionSession(PhysicalKeyPressedEventArgs key)
+    private void TrackInputText(string text)
     {
-        if (PredictionsSuppressed)
+        foreach (var character in text)
+        {
+            if (character is '\r' or '\n' or '\t')
+            {
+                TrackSubmittedInputLine();
+                continue;
+            }
+
+            _inputLineBuffer.Append(character);
+            if (_inputLineBuffer.Length > 500)
+            {
+                _inputLineBuffer.Remove(0, _inputLineBuffer.Length - 500);
+            }
+        }
+    }
+
+    private void TrackInputBackspace()
+    {
+        if (_inputLineBuffer.Length > 0)
+        {
+            _inputLineBuffer.Remove(_inputLineBuffer.Length - 1, 1);
+        }
+    }
+
+    private void TrackSubmittedInputLine()
+    {
+        var line = _inputLineBuffer.ToString();
+        _inputLineBuffer.Clear();
+
+        if (!SensitiveInputMonitor.IsCredentialPromptCommand(line))
         {
             return;
         }
 
+        _focusedTextContextSensitive = true;
+        _textSession.ResetPredictionContext();
+        RefreshPrivacyState();
+        RefreshSuggestions();
+    }
+
+    private void ClearSensitiveTextContextAfterSubmission()
+    {
+        if (!_focusedTextContextSensitive)
+        {
+            return;
+        }
+
+        _focusedTextContextSensitive = false;
+        _inputLineBuffer.Clear();
+        _textSession.ResetPredictionContext();
+        RefreshPrivacyState();
+        RequestFocusedInputSeed(allowEmptyContext: true);
+    }
+
+    internal void ApplyPhysicalKeyToPredictionSession(PhysicalKeyPressedEventArgs key)
+    {
         var virtualKey = (VirtualKey)key.VirtualKey;
+
+        if (PredictionsSuppressed)
+        {
+            if (virtualKey is VirtualKey.Enter or VirtualKey.Tab)
+            {
+                TrackSubmittedInputLine();
+                ClearSensitiveTextContextAfterSubmission();
+            }
+
+            return;
+        }
 
         if (IsNavigationKey(virtualKey))
         {
@@ -1016,6 +1465,7 @@ public partial class MainWindow : Window, INotifyPropertyChanged
         switch (virtualKey)
         {
             case VirtualKey.Back:
+                TrackInputBackspace();
                 if (_physicalSelectionActive)
                 {
                     ResetAfterPhysicalSelectionEdit();
@@ -1040,6 +1490,7 @@ public partial class MainWindow : Window, INotifyPropertyChanged
             case VirtualKey.Tab:
             case VirtualKey.Enter:
                 _physicalSelectionActive = false;
+                TrackSubmittedInputLine();
                 LearnTypedText(_textSession.CommitBoundary());
                 break;
             default:
@@ -1055,6 +1506,7 @@ public partial class MainWindow : Window, INotifyPropertyChanged
                 }
 
                 LearnTypedText(_textSession.TypeText(key.Text));
+                TrackInputText(key.Text);
                 break;
         }
 
@@ -1106,6 +1558,20 @@ public partial class MainWindow : Window, INotifyPropertyChanged
         }
 
         AcceptSuggestion(suggestion, releasePhysicalModifiers: false);
+    }
+
+    private void RemoveSuggestion_Click(object sender, RoutedEventArgs e)
+    {
+        if (sender is not MenuItem { Parent: ContextMenu { PlacementTarget: Button { Content: string suggestion } } } ||
+            string.IsNullOrWhiteSpace(suggestion))
+        {
+            return;
+        }
+
+        _predictionEngine.RemoveSuggestion(suggestion);
+        _suggestions.Remove(suggestion);
+        FooterHintText = $"Removed \"{suggestion}\" from suggestions.";
+        RefreshSuggestions();
     }
 
     private void AcceptFirstSuggestionFromShortcut()
@@ -1186,6 +1652,22 @@ public partial class MainWindow : Window, INotifyPropertyChanged
         await CheckForUpdatesAsync();
     }
 
+    private void TypingTest_Click(object sender, RoutedEventArgs e)
+    {
+        if (_typingTestWindow is { IsVisible: true })
+        {
+            _typingTestWindow.Activate();
+            return;
+        }
+
+        _typingTestWindow = new TypingTestWindow
+        {
+            Owner = this
+        };
+        _typingTestWindow.Closed += (_, _) => _typingTestWindow = null;
+        _typingTestWindow.Show();
+    }
+
     private async Task CheckForUpdatesAsync()
     {
         UpdateButton.IsEnabled = false;
@@ -1247,7 +1729,7 @@ public partial class MainWindow : Window, INotifyPropertyChanged
         });
     }
 
-    private bool PredictionsSuppressed => !_predictionsEnabled || _sensitiveInputMonitor.IsSensitive;
+    private bool PredictionsSuppressed => !_predictionsEnabled || _sensitiveInputMonitor.IsSensitive || _focusedTextContextSensitive;
 
     private bool CanLearn => _learningEnabled && !PredictionsSuppressed;
 
@@ -1261,7 +1743,7 @@ public partial class MainWindow : Window, INotifyPropertyChanged
             return;
         }
 
-        if (_sensitiveInputMonitor.IsSensitive)
+        if (_sensitiveInputMonitor.IsSensitive || _focusedTextContextSensitive)
         {
             PrivacyStatus.Text = "Sensitive field: raw keys";
             FooterHintText = "Sensitive fields get raw key input only.";
@@ -1300,6 +1782,8 @@ public partial class MainWindow : Window, INotifyPropertyChanged
 
     private void RefreshFocusedInputState()
     {
+        _focusedTextContextSensitive = false;
+        _inputLineBuffer.Clear();
         RefreshPrivacyState();
 
         if (PredictionsSuppressed)
@@ -1367,8 +1851,17 @@ public partial class MainWindow : Window, INotifyPropertyChanged
 
         await Dispatcher.InvokeAsync(() =>
         {
-            if (requestId != Volatile.Read(ref _focusedContextRequestId) || PredictionsSuppressed)
+            if (requestId != Volatile.Read(ref _focusedContextRequestId) || !_predictionsEnabled || _sensitiveInputMonitor.IsSensitive)
             {
+                return;
+            }
+
+            _focusedTextContextSensitive = SensitiveInputMonitor.IsSensitiveTextContext(textBeforeCaret);
+            if (_focusedTextContextSensitive)
+            {
+                _textSession.ResetPredictionContext();
+                RefreshPrivacyState();
+                RefreshSuggestions();
                 return;
             }
 
@@ -1485,22 +1978,34 @@ public partial class MainWindow : Window, INotifyPropertyChanged
         var width = ActualWidth > 0 ? ActualWidth : Width;
         var height = ActualHeight > 0 ? ActualHeight : Height;
         var compactness = Math.Min(width / 1220, height / 440);
+        var keyHeightScale = GetKeyHeightScale(height);
+        var compactHeight = height < 330;
 
-        KeyFontSize = Math.Clamp(21 * compactness, 12, 16);
         StatusFontSize = Math.Clamp(12.5 * compactness, 9.5, 12.5);
         StatusDotSize = Math.Clamp(7 * compactness, 4.5, 7);
         var margin = Math.Clamp(10 * compactness, 2, 10);
         OuterMargin = new Thickness(margin);
         var shellPadding = Math.Clamp(8 * compactness, 3, 8);
         ShellPadding = new Thickness(shellPadding);
-        var deckPadding = Math.Clamp(5 * compactness, 1, 5);
-        DeckPadding = new Thickness(deckPadding);
-
-        var compactHeight = height < 330;
         FooterBar.Visibility = Visibility.Visible;
         HeaderBar.Visibility = Visibility.Visible;
         HeaderBar.Margin = new Thickness(0, 0, 0, compactHeight ? 1 : 6);
         FooterBar.Margin = new Thickness(0, compactHeight ? 3 : 7, 0, 0);
+
+        var keyMinHeight = Math.Clamp(44 * keyHeightScale, compactHeight ? 0 : 24, 44);
+        var verticalKeyMargin = Math.Clamp(2.2 * keyHeightScale, compactHeight ? 0.45 : 1, 2.2);
+        var horizontalDeckPadding = Math.Clamp(5 * compactness, 1, 5);
+        var verticalDeckPadding = Math.Clamp(5 * keyHeightScale, 1, 5);
+        (keyMinHeight, verticalKeyMargin, verticalDeckPadding) = FitKeyboardDeckMetrics(
+            keyMinHeight,
+            verticalKeyMargin,
+            verticalDeckPadding,
+            GetAvailableKeyboardDeckHeight());
+
+        KeyFontSize = Math.Clamp(keyMinHeight * 0.68, 13.5, 16);
+        DeckPadding = new Thickness(horizontalDeckPadding, verticalDeckPadding, horizontalDeckPadding, verticalDeckPadding);
+        KeyboardDeck.Height = GetKeyboardDeckHeight(keyMinHeight, verticalKeyMargin, verticalDeckPadding);
+        KeyboardDeck.MaxHeight = KeyboardDeck.Height;
 
         foreach (var row in KeyboardGrid.Children.OfType<Grid>())
         {
@@ -1508,15 +2013,17 @@ public partial class MainWindow : Window, INotifyPropertyChanged
 
             foreach (var button in row.Children.OfType<Button>())
             {
-                var keyMargin = Math.Clamp(2.2 * compactness, compactHeight ? 0.45 : 1, 2.2);
-                button.Margin = new Thickness(keyMargin);
-                button.MinHeight = Math.Clamp(44 * compactness, compactHeight ? 0 : 24, 44);
+                var horizontalKeyMargin = Math.Clamp(2.2 * compactness, compactHeight ? 0.45 : 1, 2.2);
+                button.Margin = new Thickness(horizontalKeyMargin, verticalKeyMargin, horizontalKeyMargin, verticalKeyMargin);
+                button.MinHeight = keyMinHeight;
 
                 if (button.Tag is KeySpec key)
                 {
                     button.Content = GetKeyDisplay(key);
                     button.FontFamily = GetKeyFontFamily(key);
-                    button.FontSize = IsIconKey(key) ? KeyFontSize * 1.32 : KeyFontSize;
+                    button.FontSize = IsIconKey(key)
+                        ? Math.Min(KeyFontSize * 1.2, keyMinHeight * 0.88)
+                        : KeyFontSize;
                 }
             }
         }
@@ -1524,6 +2031,66 @@ public partial class MainWindow : Window, INotifyPropertyChanged
         FooterHint.Visibility = width < 900 || height < 350
             ? Visibility.Collapsed
             : Visibility.Visible;
+    }
+
+    private void ScheduleScaleUpdate()
+    {
+        Dispatcher.BeginInvoke(UpdateScale, DispatcherPriority.Loaded);
+    }
+
+    private static double GetKeyHeightScale(double height)
+    {
+        const double compactHeight = 245;
+        const double fullHeight = 440;
+        const double compactScale = 600.0 / 1220.0;
+
+        var progress = Math.Clamp((height - compactHeight) / (fullHeight - compactHeight), 0, 1);
+        return compactScale + ((1 - compactScale) * progress);
+    }
+
+    private double GetKeyboardDeckHeight(double keyMinHeight, double verticalKeyMargin, double deckPadding)
+    {
+        var rowCount = Math.Max(1, KeyboardGrid.RowDefinitions.Count);
+        return (rowCount * (keyMinHeight + (verticalKeyMargin * 2))) + (deckPadding * 2) + 2;
+    }
+
+    private double GetAvailableKeyboardDeckHeight()
+    {
+        if (RootGrid.ActualHeight <= 0)
+        {
+            return double.PositiveInfinity;
+        }
+
+        return Math.Max(
+            1,
+            RootGrid.ActualHeight -
+            HeaderBar.ActualHeight -
+            HeaderBar.Margin.Top -
+            HeaderBar.Margin.Bottom -
+            FooterBar.ActualHeight -
+            FooterBar.Margin.Top -
+            FooterBar.Margin.Bottom);
+    }
+
+    private (double KeyMinHeight, double VerticalKeyMargin, double DeckPadding) FitKeyboardDeckMetrics(
+        double keyMinHeight,
+        double verticalKeyMargin,
+        double deckPadding,
+        double availableHeight)
+    {
+        if (double.IsInfinity(availableHeight) ||
+            GetKeyboardDeckHeight(keyMinHeight, verticalKeyMargin, deckPadding) <= availableHeight)
+        {
+            return (keyMinHeight, verticalKeyMargin, deckPadding);
+        }
+
+        var rowCount = Math.Max(1, KeyboardGrid.RowDefinitions.Count);
+        var fittedDeckPadding = Math.Min(deckPadding, 1);
+        var fittedVerticalMargin = Math.Min(verticalKeyMargin, 0.45);
+        var fittedKeyHeight = (availableHeight - (fittedDeckPadding * 2) - 2) / rowCount -
+                              (fittedVerticalMargin * 2);
+
+        return (Math.Max(12, fittedKeyHeight), fittedVerticalMargin, fittedDeckPadding);
     }
 
     private Thickness GetRowMargin(int rowIndex)

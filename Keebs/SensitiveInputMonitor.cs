@@ -8,15 +8,25 @@ internal sealed class SensitiveInputMonitor : IDisposable
 {
     private static readonly string[] SensitiveKeywords =
     [
-        "password", "passcode", "pin", "cvv", "cvc", "security code", "secret",
-        "otp", "one-time", "one time", "2fa", "mfa", "verification code",
-        "recovery code", "ssn", "social security"
+        "password", "passcode", "security code", "secret", "one-time", "one time",
+        "verification code", "recovery code", "social security"
+    ];
+
+    private static readonly string[] SensitiveShortTokens =
+    [
+        "pin", "cvv", "cvc", "otp", "2fa", "mfa", "ssn"
     ];
 
     private static readonly string[] SensitiveTokenPhrases =
     [
         "access token", "api token", "auth token", "bearer token", "personal access token",
         "refresh token", "secret token"
+    ];
+
+    private static readonly string[] SensitivePromptKeywords =
+    [
+        "password", "passphrase", "passcode", "pin", "otp", "verification code",
+        "recovery code", "security code"
     ];
 
     private readonly AutomationFocusChangedEventHandler _focusChangedHandler;
@@ -156,15 +166,132 @@ internal sealed class SensitiveInputMonitor : IDisposable
 
         var className = GetStringProperty(element, AutomationElement.ClassNameProperty);
         return LooksLikeNativeClassName(className) &&
-               SensitiveKeywords.Any(keyword => className.Contains(keyword, StringComparison.OrdinalIgnoreCase));
+               (SensitiveKeywords.Any(keyword => className.Contains(keyword, StringComparison.OrdinalIgnoreCase)) ||
+                SensitiveShortTokens.Any(token => ContainsToken(className, token)));
     }
 
     internal static bool IsSensitiveMetadata(string metadata)
     {
         return SensitiveKeywords.Any(keyword =>
                    metadata.Contains(keyword, StringComparison.OrdinalIgnoreCase)) ||
+               SensitiveShortTokens.Any(token => ContainsToken(metadata, token)) ||
                SensitiveTokenPhrases.Any(phrase =>
                    metadata.Contains(phrase, StringComparison.OrdinalIgnoreCase));
+    }
+
+    internal static bool IsSensitiveTextContext(string textBeforeCaret)
+    {
+        if (string.IsNullOrWhiteSpace(textBeforeCaret))
+        {
+            return false;
+        }
+
+        var context = textBeforeCaret.Replace('\r', '\n');
+        var lines = context.Split('\n', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries);
+        var lastLine = lines.LastOrDefault() ?? context.Trim();
+        if (lastLine.Length == 0)
+        {
+            return false;
+        }
+
+        if (lastLine.Length > 240)
+        {
+            lastLine = lastLine[^240..];
+        }
+
+        var promptLike = lastLine.EndsWith(":", StringComparison.Ordinal) ||
+                         lastLine.Contains("password for", StringComparison.OrdinalIgnoreCase) ||
+                         lastLine.Contains("passphrase for", StringComparison.OrdinalIgnoreCase);
+
+        return promptLike &&
+               SensitivePromptKeywords.Any(keyword => lastLine.Contains(keyword, StringComparison.OrdinalIgnoreCase));
+    }
+
+    private static bool ContainsToken(string text, string token)
+    {
+        if (string.IsNullOrWhiteSpace(text))
+        {
+            return false;
+        }
+
+        var index = 0;
+        while (index < text.Length)
+        {
+            var matchIndex = text.IndexOf(token, index, StringComparison.OrdinalIgnoreCase);
+            if (matchIndex < 0)
+            {
+                return false;
+            }
+
+            var before = matchIndex == 0 ? '\0' : text[matchIndex - 1];
+            var afterIndex = matchIndex + token.Length;
+            var after = afterIndex >= text.Length ? '\0' : text[afterIndex];
+            if (!IsTokenCharacter(before) && !IsTokenCharacter(after))
+            {
+                return true;
+            }
+
+            index = matchIndex + token.Length;
+        }
+
+        return false;
+    }
+
+    private static bool IsTokenCharacter(char character)
+    {
+        return char.IsLetterOrDigit(character) || character == '_';
+    }
+
+    internal static bool IsCredentialPromptCommand(string commandLine)
+    {
+        if (string.IsNullOrWhiteSpace(commandLine))
+        {
+            return false;
+        }
+
+        var command = commandLine.Trim();
+        if (command.Length == 0 || command.StartsWith('#'))
+        {
+            return false;
+        }
+
+        if (command.StartsWith("sudo ", StringComparison.OrdinalIgnoreCase) ||
+            command.Equals("sudo", StringComparison.OrdinalIgnoreCase))
+        {
+            return true;
+        }
+
+        var executable = GetCommandExecutable(command);
+        return executable.Equals("ssh", StringComparison.OrdinalIgnoreCase) ||
+               executable.Equals("ssh.exe", StringComparison.OrdinalIgnoreCase) ||
+               executable.Equals("scp", StringComparison.OrdinalIgnoreCase) ||
+               executable.Equals("scp.exe", StringComparison.OrdinalIgnoreCase) ||
+               executable.Equals("sftp", StringComparison.OrdinalIgnoreCase) ||
+               executable.Equals("sftp.exe", StringComparison.OrdinalIgnoreCase);
+    }
+
+    private static string GetCommandExecutable(string command)
+    {
+        var start = 0;
+        while (start < command.Length && char.IsWhiteSpace(command[start]))
+        {
+            start++;
+        }
+
+        if (start >= command.Length)
+        {
+            return string.Empty;
+        }
+
+        var end = start;
+        while (end < command.Length && !char.IsWhiteSpace(command[end]))
+        {
+            end++;
+        }
+
+        var executable = command[start..end];
+        var slashIndex = executable.LastIndexOfAny(['/', '\\']);
+        return slashIndex >= 0 ? executable[(slashIndex + 1)..] : executable;
     }
 
     internal static bool LooksLikeNativeClassName(string className)

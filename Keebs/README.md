@@ -66,19 +66,28 @@ python .\tools\postprocess_icon.py `
   overwrite active suggestions. Keebs still ignores its own injected key events.
 - Shows four local suggestions from a local predictor seeded with common words,
   contractions, and a bundled starter corpus.
+- Right-click a suggestion and choose `Remove from suggestions` to suppress it
+  persistently from the local profile.
 - Learns typed words and accepted suggestions into a local profile.
 - Suppresses predictions and learning in sensitive fields detected via UI Automation
   password metadata or keywords such as password, PIN, CVV, OTP, and recovery code.
+- Also suppresses predictions and learning when focused terminal text looks like
+  a credential prompt, such as SSH password or private-key passphrase prompts.
 - The prediction switch disables predictions and learning manually.
 - Press `Ctrl+Space` while typing on a physical keyboard to accept the first
   visible prediction. Keebs handles the chord before Windows sees it, so repeated
   `Ctrl+Space` does not invoke the system clipboard/share shortcut.
 - Existing prediction profiles are versioned and migrated on first launch after
-  upgrade while preserving learned local frequencies.
+  upgrade while preserving learned local frequencies and merging them at runtime
+  with the bundled language base.
 - Known browser accessibility artifacts such as Firefox's stray `xhtml` context
   are rejected and removed from migrated prediction profiles.
 - Press `Update` to check the latest GitHub release, download the attached MSI,
   and launch the installer.
+- Press `Test` to open the local typing-run harness. Finished runs are appended
+  as JSONL to `%LOCALAPPDATA%\Keebs\typing-runs.jsonl` for later tuning. Swipe
+  commits append trace and candidate diagnostics to
+  `%LOCALAPPDATA%\Keebs\swipe-traces.jsonl`.
 
 ## Releases
 

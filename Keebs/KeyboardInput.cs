@@ -7,6 +7,7 @@ internal static class KeyboardInput
     private const int InputKeyboard = 1;
     private const uint KeyEventFKeyUp = 0x0002;
     private const uint KeyEventFUnicode = 0x0004;
+    internal static Action<string>? SendTextOverride { get; set; }
 
     internal static int NativeInputSize => Marshal.SizeOf<Input>();
 
@@ -18,6 +19,12 @@ internal static class KeyboardInput
     {
         if (string.IsNullOrEmpty(text))
         {
+            return;
+        }
+
+        if (SendTextOverride is { } sendText)
+        {
+            sendText(text);
             return;
         }
 

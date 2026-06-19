@@ -6,7 +6,7 @@ namespace Keebs;
 
 internal sealed class TextPredictionEngine
 {
-    private const int CurrentProfileVersion = 3;
+    private const int CurrentProfileVersion = 5;
     private const int MaxLearnedWords = 5000;
     private const int MaxSuggestions = 4;
     private const int MaxNextWordsPerPrefix = 40;
@@ -17,6 +17,7 @@ internal sealed class TextPredictionEngine
     private static readonly Lazy<string[]> CommonVocabulary = new(() => LoadWordResource("Keebs.Assets.english-common-words.txt"));
     private static readonly Lazy<string[]> DictionaryVocabulary = new(() => LoadWordResource("Keebs.Assets.english-dictionary-words.txt"));
     private static readonly Lazy<HashSet<string>> DictionaryLookup = new(() => DictionaryVocabulary.Value.ToHashSet(StringComparer.OrdinalIgnoreCase));
+    private static readonly Lazy<string[]> ExpandedCommonVocabulary = new(BuildExpandedCommonVocabulary);
     private static readonly Lazy<HashSet<string>> SeedVocabularyLookup = new(BuildSeedVocabularyLookup);
     private static readonly Lazy<Dictionary<string, int>> SeedRank = new(BuildSeedRank);
     private static readonly Lazy<PretrainedModel> Pretrained = new(BuildPretrainedModel);
@@ -25,6 +26,7 @@ internal sealed class TextPredictionEngine
     private readonly Dictionary<string, int> _wordFrequency = new(StringComparer.OrdinalIgnoreCase);
     private readonly Dictionary<string, int> _acceptedFrequency = new(StringComparer.OrdinalIgnoreCase);
     private readonly Dictionary<string, Dictionary<string, int>> _nextWordFrequency = new(StringComparer.OrdinalIgnoreCase);
+    private readonly HashSet<string> _removedSuggestions = new(StringComparer.OrdinalIgnoreCase);
     private readonly JsonSerializerOptions _jsonOptions = new()
     {
         WriteIndented = true,
@@ -35,7 +37,8 @@ internal sealed class TextPredictionEngine
     {
         ["a"] = ["lot", "little", "few"],
         ["about"] = ["the", "that", "this"],
-        ["are"] = ["you", "we", "the"],
+        ["after"] = ["another", "the", "that"],
+        ["are"] = ["you", "we", "common"],
         ["can"] = ["you", "we", "be"],
         ["could"] = ["you", "we", "be"],
         ["for"] = ["the", "this", "that"],
@@ -47,12 +50,19 @@ internal sealed class TextPredictionEngine
         ["it"] = ["is", "would", "can"],
         ["keyboard"] = ["layout", "input", "prediction"],
         ["let"] = ["me", "us", "it"],
+        ["normal"] = ["corrections", "field", "typing"],
         ["of"] = ["the", "this", "that"],
-        ["on"] = ["the", "windows", "screen"],
+        ["on"] = ["the", "or", "windows"],
+        ["or"] = ["is", "it", "the"],
+        ["paths"] = ["should", "can", "will"],
+        ["private"] = ["and", "data", "typing"],
+        ["runs"] = ["local", "and", "the"],
         ["that"] = ["works", "would", "is"],
         ["the"] = ["keyboard", "app", "text"],
         ["this"] = ["is", "works", "should"],
         ["to"] = ["the", "be", "use"],
+        ["traces"] = ["against", "and", "from"],
+        ["testing"] = ["contractions", "the", "this"],
         ["we"] = ["can", "should", "could"],
         ["what"] = ["about", "is", "we"],
         ["windows"] = ["keyboard", "osk", "app"],
@@ -85,6 +95,25 @@ internal sealed class TextPredictionEngine
         "shouldn't", "that's", "there's", "they'd", "they'll", "they're", "they've", "wasn't",
         "we'd", "we'll", "we're", "we've", "weren't", "what's", "where's", "who's", "won't",
         "wouldn't", "you'd", "you'll", "you're", "you've"
+    ];
+
+    private static readonly string[] BuiltInSwipeVocabulary =
+    [
+        "the", "and", "you", "that", "this", "have", "for", "not", "with", "are", "but", "can", "is", "it", "ok", "on", "now",
+        "all", "was", "or", "we", "what", "when", "where", "why", "how", "hello", "thanks", "please", "quick",
+        "keyboard", "prediction", "tomorrow", "installation", "typing", "window", "screen", "update", "updates",
+        "install", "release", "touchy", "fragile", "forgive", "path", "paths", "mistakes", "compare", "scores", "should",
+        "fires", "ish", "first", "guess", "stays", "visible", "short", "words", "drift", "little", "messy", "fingers",
+        "normal", "corrections", "interrupt", "traces", "against", "saved", "runs", "training", "data", "stay",
+        "useful", "testing", "contractions", "common", "will", "tune", "after", "another", "noisy", "sample"
+    ];
+
+    private static readonly string[] CommonBackfillVocabulary =
+    [
+        "app", "apps", "browser", "browsers", "callback", "callbacks", "checkbox", "checkboxes", "commit", "commits",
+        "corpus", "debug", "debugging", "discord", "feedback", "firefox", "github", "install", "installer", "ish",
+        "messy", "profile", "profiles", "prompt", "prompts", "release", "sample", "samples", "seed", "seeding",
+        "swipe", "swipes", "textbox", "textboxes", "toggle", "toggles", "trace", "traces", "typo", "typos"
     ];
 
     public TextPredictionEngine()
@@ -148,10 +177,12 @@ internal sealed class TextPredictionEngine
         }
 
         var normalizedPreviousWord = NormalizeWord(context.PreviousWord);
-        return GetVocabularyCandidates()
-            .Concat(DictionaryVocabulary.Value)
+        return GetSwipeVocabularyCandidates(pattern)
             .Select(NormalizeWord)
             .Where(word => word.Length >= 2)
+            .Where(word => !IsRemovedSuggestion(word))
+            .Where(word => !word.Contains('\''))
+            .Where(word => word[0] == pattern[0])
             .Distinct(StringComparer.OrdinalIgnoreCase)
             .Select(word => new
             {
@@ -159,13 +190,15 @@ internal sealed class TextPredictionEngine
                 Match = GetSwipeMatch(pattern, NormalizeSwipePattern(word))
             })
             .Where(candidate => candidate.Match is not null)
-            .OrderBy(candidate => candidate.Match!.EditDistance)
+            .OrderBy(candidate => GetSwipeEditCost(candidate.Word, candidate.Match!))
+            .ThenBy(candidate => candidate.Match!.IsExactMatch ? 0 : 1)
+            .ThenBy(candidate => GetSeedRank(candidate.Word))
+            .ThenBy(candidate => candidate.Match!.TraceIsSubsequenceOfWord ? 0 : 1)
             .ThenBy(candidate => candidate.Match!.SkippedLetters)
             .ThenByDescending(candidate => GetNextWordScore(normalizedPreviousWord, candidate.Word))
             .ThenByDescending(candidate => _acceptedFrequency.TryGetValue(candidate.Word, out var accepted) ? accepted : 0)
             .ThenByDescending(candidate => _wordFrequency.TryGetValue(candidate.Word, out var frequency) ? frequency : 0)
             .ThenByDescending(candidate => Pretrained.Value.WordFrequency.TryGetValue(candidate.Word, out var pretrainedFrequency) ? pretrainedFrequency : 0)
-            .ThenBy(candidate => GetSeedRank(candidate.Word))
             .ThenBy(candidate => candidate.Word.Length)
             .ThenBy(candidate => candidate.Word, StringComparer.OrdinalIgnoreCase)
             .Take(maxCandidates)
@@ -191,7 +224,7 @@ internal sealed class TextPredictionEngine
     public void LearnAcceptedSuggestion(string suggestion, string previousWord)
     {
         var word = NormalizeWord(suggestion);
-        if (word.Length == 0)
+        if (word.Length == 0 || IsRemovedSuggestion(word))
         {
             return;
         }
@@ -200,6 +233,48 @@ internal sealed class TextPredictionEngine
         LearnWord(word);
         LearnNextWord(previousWord, word);
         SaveProfile();
+    }
+
+    public void RemoveSuggestion(string suggestion)
+    {
+        var word = NormalizeWord(suggestion);
+        if (word.Length == 0)
+        {
+            return;
+        }
+
+        _removedSuggestions.Add(word);
+        _wordFrequency.Remove(word);
+        _acceptedFrequency.Remove(word);
+        _nextWordFrequency.Remove(word);
+
+        foreach (var nextWords in _nextWordFrequency.Values)
+        {
+            nextWords.Remove(word);
+        }
+
+        SaveProfile();
+    }
+
+    internal int GetContextualNextWordScore(string previousWord, string word)
+    {
+        var normalizedPreviousWord = previousWord.Equals("w", StringComparison.OrdinalIgnoreCase)
+            ? "we"
+            : NormalizeWord(previousWord);
+        var normalizedWord = NormalizeWord(word);
+        if (normalizedPreviousWord.Length == 0 || normalizedWord.Length == 0)
+        {
+            return 0;
+        }
+
+        var score = GetNextWordScore(normalizedPreviousWord, normalizedWord);
+        if (NextWord.TryGetValue(normalizedPreviousWord, out var builtInNextWords) &&
+            builtInNextWords.Contains(normalizedWord, StringComparer.OrdinalIgnoreCase))
+        {
+            score += 25;
+        }
+
+        return score;
     }
 
     private IEnumerable<string> CompleteWord(string prefix, string previousWord)
@@ -228,7 +303,7 @@ internal sealed class TextPredictionEngine
         AddDictionaryFallbacks(ranked, normalizedPrefix);
 
         return ranked.Count == 0 && IsWordLikePrefix(prefix)
-            ? [normalizedPrefix]
+            ? IsRemovedSuggestion(normalizedPrefix) ? [] : [normalizedPrefix]
             : ranked;
     }
 
@@ -236,30 +311,154 @@ internal sealed class TextPredictionEngine
     {
         return BuiltInVocabulary
             .Concat(BuiltInContractions)
-            .Concat(CommonVocabulary.Value)
+            .Concat(ExpandedCommonVocabulary.Value)
             .Concat(Pretrained.Value.WordFrequency.Keys)
             .Concat(_wordFrequency.Keys)
             .Concat(_acceptedFrequency.Keys);
     }
 
+    private IEnumerable<string> GetSwipeVocabularyCandidates(string pattern)
+    {
+        var candidates = BuiltInSwipeVocabulary
+            .Concat(BuiltInVocabulary)
+            .Concat(BuiltInContractions)
+            .Concat(ExpandedCommonVocabulary.Value)
+            .Concat(Pretrained.Value.WordFrequency.Keys)
+            .Concat(_acceptedFrequency.Keys)
+            .Concat(GetDictionarySwipeCandidates(pattern));
+
+        return pattern.Length < 5
+            ? candidates
+            : candidates.Concat(_wordFrequency.Keys);
+    }
+
+    private static IEnumerable<string> GetDictionarySwipeCandidates(string pattern)
+    {
+        if (pattern.Length < 5 || pattern.Length > 24)
+        {
+            yield break;
+        }
+
+        foreach (var word in GetDictionaryPrefixMatches(pattern[0].ToString()))
+        {
+            var wordPattern = NormalizeSwipePattern(word);
+            if (Math.Abs(wordPattern.Length - pattern.Length) > GetMaximumSwipeLengthDifference(pattern.Length, wordPattern.Length))
+            {
+                continue;
+            }
+
+            if (GetSwipeMatch(pattern, wordPattern) is not null)
+            {
+                yield return word;
+            }
+        }
+    }
+
     private static SwipeMatch? GetSwipeMatch(string pattern, string wordPattern)
     {
-        if (wordPattern.Length < 2 ||
-            pattern[0] != wordPattern[0] ||
-            pattern[^1] != wordPattern[^1])
+        if (wordPattern.Length < 2 || pattern[0] != wordPattern[0])
         {
             return null;
         }
 
-        var editDistance = GetLevenshteinDistance(pattern, wordPattern);
-        var maximumDistance = Math.Max(1, Math.Min(4, Math.Max(pattern.Length, wordPattern.Length) / 3));
-        if (editDistance > maximumDistance && !IsOrderedSubsequence(wordPattern, pattern))
+        var maximumDistance = GetMaximumSwipeEditDistance(pattern.Length, wordPattern.Length);
+        var editDistance = GetDamerauLevenshteinDistance(pattern, wordPattern, maximumDistance);
+        var wordIsSubsequenceOfTrace = IsOrderedSubsequence(wordPattern, pattern);
+        var traceIsSubsequenceOfWord = IsOrderedSubsequence(pattern, wordPattern);
+        var lengthDifference = Math.Abs(pattern.Length - wordPattern.Length);
+        if ((lengthDifference <= GetMaximumSwipeLengthDifference(pattern.Length, wordPattern.Length) ||
+             wordIsSubsequenceOfTrace ||
+             traceIsSubsequenceOfWord) &&
+            (editDistance <= maximumDistance || wordIsSubsequenceOfTrace || traceIsSubsequenceOfWord))
+        {
+            return new SwipeMatch(editDistance, lengthDifference, traceIsSubsequenceOfWord, wordIsSubsequenceOfTrace, pattern == wordPattern);
+        }
+
+        return GetLooseNoisySwipeMatch(pattern, wordPattern, maximumDistance, lengthDifference);
+    }
+
+    private static SwipeMatch? GetLooseNoisySwipeMatch(
+        string pattern,
+        string wordPattern,
+        int maximumDistance,
+        int lengthDifference)
+    {
+        if (pattern.Length < 7 ||
+            pattern.Length < wordPattern.Length + 3 ||
+            wordPattern.Length < 3)
         {
             return null;
         }
 
-        var skippedLetters = Math.Max(0, pattern.Length - wordPattern.Length);
-        return new SwipeMatch(editDistance, skippedLetters);
+        var orderedMatches = GetOrderedMatchCount(wordPattern, pattern);
+        var coveredLetters = GetLetterCoverageCount(wordPattern, pattern);
+        var requiredLetters = wordPattern.Length <= 3
+            ? 2
+            : Math.Max(4, (int)Math.Ceiling(wordPattern.Length * 0.62));
+        var requiredCoverage = requiredLetters;
+
+        if (orderedMatches < requiredLetters && coveredLetters < requiredCoverage)
+        {
+            return null;
+        }
+
+        if (!pattern.Contains(wordPattern[^1]) && Math.Max(orderedMatches, coveredLetters) < wordPattern.Length - 1)
+        {
+            return null;
+        }
+
+        var looseDistance = Math.Max(1, wordPattern.Length - Math.Max(orderedMatches, coveredLetters));
+        return new SwipeMatch(looseDistance, lengthDifference, false, orderedMatches == wordPattern.Length, false);
+    }
+
+    private int GetSwipeEditCost(string word, SwipeMatch match)
+    {
+        var cost = match.EditDistance;
+
+        if (match.TraceIsSubsequenceOfWord)
+        {
+            cost -= match.SkippedLetters >= 2 ? 3 : 2;
+        }
+
+        if (match.WordIsSubsequenceOfTrace)
+        {
+            cost = Math.Min(cost, 1);
+            if (word.Length <= 2 && match.SkippedLetters >= 5)
+            {
+                cost += 4;
+            }
+        }
+
+        if (IsHighConfidenceSwipeWord(word))
+        {
+            cost--;
+        }
+        else
+        {
+            cost++;
+        }
+
+        return Math.Max(0, cost);
+    }
+
+    private bool IsHighConfidenceSwipeWord(string word)
+    {
+        return SeedVocabularyLookup.Value.Contains(word) ||
+               Pretrained.Value.WordFrequency.ContainsKey(word) ||
+               _wordFrequency.ContainsKey(word) ||
+               _acceptedFrequency.ContainsKey(word);
+    }
+
+    private static int GetMaximumSwipeEditDistance(int traceLength, int wordLength)
+    {
+        var length = Math.Max(traceLength, wordLength);
+        return Math.Max(1, Math.Min(5, (int)Math.Ceiling(length * 0.45)));
+    }
+
+    private static int GetMaximumSwipeLengthDifference(int traceLength, int wordLength)
+    {
+        var length = Math.Max(traceLength, wordLength);
+        return Math.Max(1, Math.Min(5, (int)Math.Ceiling(length * 0.4)));
     }
 
     private static bool IsOrderedSubsequence(string expectedLetters, string tracedLetters)
@@ -281,6 +480,59 @@ internal sealed class TextPredictionEngine
         }
 
         return false;
+    }
+
+    private static int GetOrderedMatchCount(string expectedLetters, string tracedLetters)
+    {
+        var expectedIndex = 0;
+
+        foreach (var letter in tracedLetters)
+        {
+            if (expectedIndex >= expectedLetters.Length)
+            {
+                break;
+            }
+
+            if (letter == expectedLetters[expectedIndex])
+            {
+                expectedIndex++;
+            }
+        }
+
+        return expectedIndex;
+    }
+
+    private static int GetLetterCoverageCount(string expectedLetters, string tracedLetters)
+    {
+        Span<int> counts = stackalloc int[26];
+
+        foreach (var letter in tracedLetters)
+        {
+            if (letter is >= 'a' and <= 'z')
+            {
+                counts[letter - 'a']++;
+            }
+        }
+
+        var covered = 0;
+        foreach (var letter in expectedLetters)
+        {
+            if (letter is < 'a' or > 'z')
+            {
+                continue;
+            }
+
+            var index = letter - 'a';
+            if (counts[index] <= 0)
+            {
+                continue;
+            }
+
+            counts[index]--;
+            covered++;
+        }
+
+        return covered;
     }
 
     private static int GetLevenshteinDistance(string left, string right)
@@ -374,6 +626,7 @@ internal sealed class TextPredictionEngine
         return words
             .Select(NormalizeWord)
             .Where(word => word.Length > 0)
+            .Where(word => !IsRemovedSuggestion(word))
             .Distinct(StringComparer.OrdinalIgnoreCase)
             .OrderByDescending(word => GetNextWordScore(normalizedPreviousWord, word))
             .ThenByDescending(word => _acceptedFrequency.TryGetValue(word, out var accepted) ? accepted : 0)
@@ -402,6 +655,7 @@ internal sealed class TextPredictionEngine
         return GetSpellCheckCandidates()
             .Select(NormalizeWord)
             .Where(candidate => IsSpellCheckCandidate(word, candidate, maximumDistance))
+            .Where(candidate => !IsRemovedSuggestion(candidate))
             .Distinct(StringComparer.OrdinalIgnoreCase)
             .Select(candidate => new
             {
@@ -425,7 +679,7 @@ internal sealed class TextPredictionEngine
     {
         return BuiltInVocabulary
             .Concat(BuiltInContractions)
-            .Concat(CommonVocabulary.Value)
+            .Concat(ExpandedCommonVocabulary.Value)
             .Concat(DictionaryVocabulary.Value)
             .Concat(Pretrained.Value.WordFrequency.Keys)
             .Concat(_wordFrequency.Keys)
@@ -497,7 +751,7 @@ internal sealed class TextPredictionEngine
     private bool LearnWord(string word)
     {
         var normalizedWord = NormalizeWord(word);
-        if (normalizedWord.Length == 0)
+        if (normalizedWord.Length == 0 || IsRemovedSuggestion(normalizedWord))
         {
             return false;
         }
@@ -512,7 +766,10 @@ internal sealed class TextPredictionEngine
         var normalizedPreviousWord = NormalizeWord(previousWord);
         var normalizedWord = NormalizeWord(word);
 
-        if (normalizedPreviousWord.Length == 0 || normalizedWord.Length == 0)
+        if (normalizedPreviousWord.Length == 0 ||
+            normalizedWord.Length == 0 ||
+            IsRemovedSuggestion(normalizedPreviousWord) ||
+            IsRemovedSuggestion(normalizedWord))
         {
             return false;
         }
@@ -548,17 +805,23 @@ internal sealed class TextPredictionEngine
 
             CopyInto(profile.WordFrequency, _wordFrequency);
             CopyInto(profile.AcceptedFrequency, _acceptedFrequency);
+            CopyRemovedSuggestions(profile.RemovedSuggestions);
 
             foreach (var (previousWord, nextWords) in profile.NextWordFrequency)
             {
                 var normalizedPreviousWord = NormalizeWord(previousWord);
-                if (normalizedPreviousWord.Length == 0)
+                if (normalizedPreviousWord.Length == 0 || IsRemovedSuggestion(normalizedPreviousWord))
                 {
                     continue;
                 }
 
                 var target = new Dictionary<string, int>(StringComparer.OrdinalIgnoreCase);
                 CopyInto(nextWords, target);
+                foreach (var removedSuggestion in _removedSuggestions)
+                {
+                    target.Remove(removedSuggestion);
+                }
+
                 if (target.Count > 0)
                 {
                     _nextWordFrequency[normalizedPreviousWord] = target;
@@ -596,6 +859,9 @@ internal sealed class TextPredictionEngine
                 Version = CurrentProfileVersion,
                 WordFrequency = OrderedCopy(_wordFrequency),
                 AcceptedFrequency = OrderedCopy(_acceptedFrequency),
+                RemovedSuggestions = _removedSuggestions
+                    .Order(StringComparer.OrdinalIgnoreCase)
+                    .ToArray(),
                 NextWordFrequency = _nextWordFrequency
                     .OrderBy(pair => pair.Key, StringComparer.OrdinalIgnoreCase)
                     .ToDictionary(
@@ -644,6 +910,20 @@ internal sealed class TextPredictionEngine
             }
 
             target[normalizedWord] = frequency;
+        }
+    }
+
+    private void CopyRemovedSuggestions(IEnumerable<string> source)
+    {
+        foreach (var suggestion in source)
+        {
+            var word = NormalizeWord(suggestion);
+            if (word.Length > 0)
+            {
+                _removedSuggestions.Add(word);
+                _wordFrequency.Remove(word);
+                _acceptedFrequency.Remove(word);
+            }
         }
     }
 
@@ -716,7 +996,18 @@ internal sealed class TextPredictionEngine
 
     private static bool IsRejectedPredictionWord(string word)
     {
-        return word.Equals("xhtml", StringComparison.OrdinalIgnoreCase);
+        return word.Equals("xhtml", StringComparison.OrdinalIgnoreCase) ||
+               word.Equals("iuds", StringComparison.OrdinalIgnoreCase) ||
+               word.Equals("ires", StringComparison.OrdinalIgnoreCase) ||
+               word.Equals("nk", StringComparison.OrdinalIgnoreCase) ||
+               word.Equals("oik", StringComparison.OrdinalIgnoreCase) ||
+               word.Equals("ssh", StringComparison.OrdinalIgnoreCase) ||
+               word.Equals("ui", StringComparison.OrdinalIgnoreCase);
+    }
+
+    private bool IsRemovedSuggestion(string word)
+    {
+        return _removedSuggestions.Contains(word);
     }
 
     private static string FormatSuggestion(string word)
@@ -731,6 +1022,73 @@ internal sealed class TextPredictionEngine
             : word;
     }
 
+    private static string[] BuildExpandedCommonVocabulary()
+    {
+        var words = new List<string>();
+        var seen = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+
+        void Add(string word)
+        {
+            var normalizedWord = NormalizeWord(word);
+            if (normalizedWord.Length > 0 && seen.Add(normalizedWord))
+            {
+                words.Add(normalizedWord);
+            }
+        }
+
+        foreach (var word in CommonVocabulary.Value)
+        {
+            Add(word);
+            AddCommonInflections(word, Add);
+        }
+
+        foreach (var word in CommonBackfillVocabulary)
+        {
+            Add(word);
+            AddCommonInflections(word, Add);
+        }
+
+        return [.. words];
+    }
+
+    private static void AddCommonInflections(string word, Action<string> add)
+    {
+        if (word.Length < 3 || word.Length > 18)
+        {
+            return;
+        }
+
+        AddIfDictionaryWord($"{word}s", add);
+        AddIfDictionaryWord($"{word}es", add);
+        AddIfDictionaryWord($"{word}ed", add);
+        AddIfDictionaryWord($"{word}ing", add);
+        AddIfDictionaryWord($"{word}er", add);
+        AddIfDictionaryWord($"{word}est", add);
+        AddIfDictionaryWord($"{word}ly", add);
+
+        if (word.EndsWith('e'))
+        {
+            AddIfDictionaryWord($"{word[..^1]}ed", add);
+            AddIfDictionaryWord($"{word[..^1]}ing", add);
+        }
+
+        if (word.EndsWith('y') && word.Length > 3)
+        {
+            AddIfDictionaryWord($"{word[..^1]}ies", add);
+            AddIfDictionaryWord($"{word[..^1]}ied", add);
+            AddIfDictionaryWord($"{word[..^1]}ier", add);
+            AddIfDictionaryWord($"{word[..^1]}iest", add);
+        }
+    }
+
+    private static void AddIfDictionaryWord(string word, Action<string> add)
+    {
+        if (DictionaryLookup.Value.Contains(word))
+        {
+            add(word);
+        }
+    }
+
     private static int GetSeedRank(string word)
     {
         return SeedRank.Value.TryGetValue(word, out var rank) ? rank : MissingSeedRank;
@@ -741,7 +1099,7 @@ internal sealed class TextPredictionEngine
         var rank = new Dictionary<string, int>(StringComparer.OrdinalIgnoreCase);
         var index = 0;
 
-        foreach (var word in BuiltInVocabulary.Concat(BuiltInContractions).Concat(CommonVocabulary.Value))
+        foreach (var word in BuiltInSwipeVocabulary.Concat(BuiltInVocabulary).Concat(BuiltInContractions).Concat(ExpandedCommonVocabulary.Value))
         {
             var normalizedWord = NormalizeWord(word);
             if (normalizedWord.Length == 0 || rank.ContainsKey(normalizedWord))
@@ -758,8 +1116,9 @@ internal sealed class TextPredictionEngine
     private static HashSet<string> BuildSeedVocabularyLookup()
     {
         return BuiltInVocabulary
+            .Concat(BuiltInSwipeVocabulary)
             .Concat(BuiltInContractions)
-            .Concat(CommonVocabulary.Value)
+            .Concat(ExpandedCommonVocabulary.Value)
             .Select(NormalizeWord)
             .Where(word => word.Length > 0)
             .ToHashSet(StringComparer.OrdinalIgnoreCase);
@@ -859,6 +1218,7 @@ internal sealed class TextPredictionEngine
         }
 
         if (DictionaryLookup.Value.Contains(prefix) &&
+            !IsRemovedSuggestion(prefix) &&
             !suggestions.Contains(prefix, StringComparer.OrdinalIgnoreCase))
         {
             var insertionIndex = GetExactMatchInsertionIndex(suggestions);
@@ -873,6 +1233,7 @@ internal sealed class TextPredictionEngine
 
         foreach (var word in GetDictionaryPrefixMatches(prefix)
                      .Where(word => !word.Equals(prefix, StringComparison.OrdinalIgnoreCase) &&
+                                    !IsRemovedSuggestion(word) &&
                                     !suggestions.Contains(word, StringComparer.OrdinalIgnoreCase))
                      .OrderBy(GetSeedRank)
                      .ThenBy(word => word.Length)
@@ -969,6 +1330,8 @@ internal sealed class TextPredictionEngine
 
         public Dictionary<string, int> AcceptedFrequency { get; init; } = new(StringComparer.OrdinalIgnoreCase);
 
+        public string[] RemovedSuggestions { get; init; } = [];
+
         public Dictionary<string, Dictionary<string, int>> NextWordFrequency { get; init; } = new(StringComparer.OrdinalIgnoreCase);
     }
 
@@ -976,5 +1339,10 @@ internal sealed class TextPredictionEngine
         Dictionary<string, int> WordFrequency,
         Dictionary<string, Dictionary<string, int>> NextWordFrequency);
 
-    private sealed record SwipeMatch(int EditDistance, int SkippedLetters);
+    private sealed record SwipeMatch(
+        int EditDistance,
+        int SkippedLetters,
+        bool TraceIsSubsequenceOfWord,
+        bool WordIsSubsequenceOfTrace,
+        bool IsExactMatch);
 }

@@ -135,7 +135,46 @@ public sealed class TextPredictionEngineTests
         var migratedJson = File.ReadAllText(profilePath);
 
         Assert.Equal("quincboard", suggestions[0]);
-        Assert.Contains("\"Version\": 3", migratedJson);
+        Assert.Contains("\"Version\": 5", migratedJson);
+    }
+
+    [Fact]
+    public void MigratedProfileCombinesLocalDictionaryWithExpandedLanguageBase()
+    {
+        var profilePath = GetProfilePath();
+        Directory.CreateDirectory(Path.GetDirectoryName(profilePath)!);
+        File.WriteAllText(
+            profilePath,
+            """
+            {
+              "Version": 3,
+              "WordFrequency": {
+                "quincboard": 7
+              },
+              "AcceptedFrequency": {
+                "quincboard": 3
+              },
+              "NextWordFrequency": {
+                "quincboard": {
+                  "skin": 5
+                }
+              }
+            }
+            """);
+
+        var engine = new TextPredictionEngine(profilePath);
+        var localSuggestions = engine.GetSuggestions(new PredictionContext("quin", [])).ToArray();
+        var expandedSuggestions = engine.GetSuggestions(new PredictionContext("mess", [])).ToArray();
+        var swipeSuggestions = engine.GetSwipeSuggestions("sample", new PredictionContext(string.Empty, [])).ToArray();
+        var nextWordSuggestions = engine.GetSuggestions(new PredictionContext(string.Empty, ["quincboard"])).ToArray();
+        var migratedJson = File.ReadAllText(profilePath);
+
+        Assert.Equal("quincboard", localSuggestions[0]);
+        Assert.Contains("messy", expandedSuggestions);
+        Assert.Equal("sample", swipeSuggestions[0]);
+        Assert.Equal("skin", nextWordSuggestions[0]);
+        Assert.Contains("\"quincboard\": 7", migratedJson);
+        Assert.Contains("\"Version\": 5", migratedJson);
     }
 
     [Fact]
@@ -150,9 +189,12 @@ public sealed class TextPredictionEngineTests
               "Version": 2,
               "WordFrequency": {
                 "xhtml": 10,
+                "iuds": 8,
                 "queryword": 3
               },
-              "AcceptedFrequency": {},
+              "AcceptedFrequency": {
+                "oik": 4
+              },
               "NextWordFrequency": {}
             }
             """);
@@ -165,7 +207,31 @@ public sealed class TextPredictionEngineTests
         Assert.DoesNotContain("xhtml", artifactSuggestions);
         Assert.Equal("queryword", realSuggestions[0]);
         Assert.DoesNotContain("xhtml", migratedJson);
-        Assert.Contains("\"Version\": 3", migratedJson);
+        Assert.DoesNotContain("iuds", migratedJson);
+        Assert.DoesNotContain("oik", migratedJson);
+        Assert.Contains("\"Version\": 5", migratedJson);
+    }
+
+    [Fact]
+    public void RemovedSuggestionsAreSuppressedAndPersisted()
+    {
+        var profilePath = GetProfilePath();
+        var engine = new TextPredictionEngine(profilePath);
+
+        engine.LearnTypedText([new TextCommit("secretword", string.Empty)]);
+        Assert.Equal("secretword", engine.GetSuggestions(new PredictionContext("secretw", [])).First());
+
+        engine.RemoveSuggestion("secretword");
+
+        var suggestions = engine.GetSuggestions(new PredictionContext("secretw", [])).ToArray();
+        var reloaded = new TextPredictionEngine(profilePath);
+        var reloadedSuggestions = reloaded.GetSuggestions(new PredictionContext("secretw", [])).ToArray();
+        var json = File.ReadAllText(profilePath);
+
+        Assert.DoesNotContain("secretword", suggestions);
+        Assert.DoesNotContain("secretword", reloadedSuggestions);
+        Assert.Contains("\"secretword\"", json);
+        Assert.Contains("\"RemovedSuggestions\"", json);
     }
 
     [Fact]
@@ -214,6 +280,89 @@ public sealed class TextPredictionEngineTests
         var suggestions = engine.GetSwipeSuggestions("qincbord", new PredictionContext(string.Empty, [])).ToArray();
 
         Assert.Equal("quincboard", suggestions[0]);
+    }
+
+    [Theory]
+    [InlineData("teh", "the")]
+    [InlineData("quik", "quick")]
+    public void SwipeSuggestionsPreferCommonWordsForMinorTraceMistakes(string trace, string expectedSuggestion)
+    {
+        var engine = CreateEngine();
+        var suggestions = engine.GetSwipeSuggestions(trace, new PredictionContext(string.Empty, [])).ToArray();
+
+        Assert.Equal(expectedSuggestion, suggestions[0]);
+    }
+
+    [Theory]
+    [InlineData("iuds", "is")]
+    [InlineData("oik", "ok")]
+    public void SwipeSuggestionsIgnoreLearnedShortTypoArtifacts(string trace, string expectedSuggestion)
+    {
+        var engine = CreateEngine();
+        engine.LearnTypedText([new TextCommit(trace, string.Empty)]);
+        engine.LearnAcceptedSuggestion(trace, string.Empty);
+
+        var suggestions = engine.GetSwipeSuggestions(trace, new PredictionContext(string.Empty, [])).ToArray();
+
+        Assert.Equal(expectedSuggestion, suggestions[0]);
+    }
+
+    [Theory]
+    [InlineData("finger", "fingers")]
+    [InlineData("correction", "corrections")]
+    [InlineData("contraction", "contractions")]
+    [InlineData("fire", "fires")]
+    public void SuggestionsIncludeDictionaryConfirmedCommonInflections(string prefix, string expectedSuggestion)
+    {
+        var engine = CreateEngine();
+
+        var suggestions = engine.GetSuggestions(new PredictionContext(prefix, [])).ToArray();
+
+        Assert.Contains(expectedSuggestion, suggestions);
+    }
+
+    [Theory]
+    [InlineData("messy")]
+    [InlineData("sample")]
+    [InlineData("fingers")]
+    [InlineData("corrections")]
+    [InlineData("contractions")]
+    public void SwipeSuggestionsIncludeExpandedCommonVocabulary(string word)
+    {
+        var engine = CreateEngine();
+
+        var suggestions = engine.GetSwipeSuggestions(word, new PredictionContext(string.Empty, [])).ToArray();
+
+        Assert.Equal(word, suggestions[0]);
+    }
+
+    [Theory]
+    [InlineData("zebra")]
+    [InlineData("swipe")]
+    [InlineData("tomorrow")]
+    public void SwipeSuggestionsIncludeBroadDictionaryWords(string word)
+    {
+        var engine = CreateEngine();
+        var suggestions = engine.GetSwipeSuggestions(word, new PredictionContext(string.Empty, [])).ToArray();
+
+        Assert.Equal(word, suggestions[0]);
+    }
+
+    [Theory]
+    [InlineData("keybord", "keyboard")]
+    [InlineData("keybrd", "keyboard")]
+    [InlineData("prdction", "prediction")]
+    [InlineData("prdctn", "prediction")]
+    [InlineData("tomorow", "tomorrow")]
+    [InlineData("tmorw", "tomorrow")]
+    [InlineData("instaltion", "installation")]
+    [InlineData("instltn", "installation")]
+    public void SwipeSuggestionsTolerateLongWordTraceErrors(string trace, string expectedSuggestion)
+    {
+        var engine = CreateEngine();
+        var suggestions = engine.GetSwipeSuggestions(trace, new PredictionContext(string.Empty, [])).ToArray();
+
+        Assert.Equal(expectedSuggestion, suggestions[0]);
     }
 
     private static TextPredictionEngine CreateEngine()

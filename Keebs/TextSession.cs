@@ -7,16 +7,20 @@ internal sealed class TextSession
     private readonly StringBuilder _currentWord = new();
     private readonly Queue<string> _previousWords = new();
     private int _boundaryCharactersAfterPreviousWord;
+    private bool _needsWordBoundaryBeforeNextWord;
 
     public PredictionContext Context => new(
         _currentWord.ToString(),
         _previousWords.ToArray());
+
+    public bool NeedsWordBoundaryBeforeNextWord => _needsWordBoundaryBeforeNextWord;
 
     public void SeedFromTextBeforeCaret(string textBeforeCaret)
     {
         _currentWord.Clear();
         _previousWords.Clear();
         _boundaryCharactersAfterPreviousWord = 0;
+        _needsWordBoundaryBeforeNextWord = false;
 
         var words = new List<string>();
         var word = new StringBuilder();
@@ -28,6 +32,7 @@ internal sealed class TextSession
             {
                 word.Append(normalizedCharacter);
                 _boundaryCharactersAfterPreviousWord = 0;
+                _needsWordBoundaryBeforeNextWord = false;
                 continue;
             }
 
@@ -35,6 +40,7 @@ internal sealed class TextSession
             if (words.Count > 0)
             {
                 _boundaryCharactersAfterPreviousWord++;
+                _needsWordBoundaryBeforeNextWord = !char.IsWhiteSpace(character);
             }
         }
 
@@ -43,6 +49,7 @@ internal sealed class TextSession
         {
             _currentWord.Append(word.ToString());
             _boundaryCharactersAfterPreviousWord = 0;
+            _needsWordBoundaryBeforeNextWord = false;
         }
 
         foreach (var previousWord in words.TakeLast(4))
@@ -62,16 +69,19 @@ internal sealed class TextSession
             {
                 _currentWord.Append(normalizedCharacter);
                 _boundaryCharactersAfterPreviousWord = 0;
+                _needsWordBoundaryBeforeNextWord = false;
             }
             else
             {
                 if (CommitBoundary() is { } commit)
                 {
                     commits.Add(commit);
+                    _needsWordBoundaryBeforeNextWord = !char.IsWhiteSpace(character);
                 }
                 else if (_previousWords.Count > 0)
                 {
                     _boundaryCharactersAfterPreviousWord++;
+                    _needsWordBoundaryBeforeNextWord = !char.IsWhiteSpace(character);
                 }
             }
         }
@@ -84,12 +94,14 @@ internal sealed class TextSession
         if (_currentWord.Length > 0)
         {
             _currentWord.Remove(_currentWord.Length - 1, 1);
+            _needsWordBoundaryBeforeNextWord = false;
             return;
         }
 
         if (_boundaryCharactersAfterPreviousWord > 1)
         {
             _boundaryCharactersAfterPreviousWord--;
+            _needsWordBoundaryBeforeNextWord = false;
             return;
         }
 
@@ -110,6 +122,7 @@ internal sealed class TextSession
 
         _currentWord.Append(wordToRestore);
         _boundaryCharactersAfterPreviousWord = 0;
+        _needsWordBoundaryBeforeNextWord = false;
     }
 
     public void BackspaceWord()
@@ -117,12 +130,14 @@ internal sealed class TextSession
         if (_currentWord.Length > 0)
         {
             _currentWord.Clear();
+            _needsWordBoundaryBeforeNextWord = false;
             return;
         }
 
         if (_previousWords.Count == 0)
         {
             _boundaryCharactersAfterPreviousWord = 0;
+            _needsWordBoundaryBeforeNextWord = false;
             return;
         }
 
@@ -136,6 +151,7 @@ internal sealed class TextSession
         }
 
         _boundaryCharactersAfterPreviousWord = previousWords.Count > 0 ? 1 : 0;
+        _needsWordBoundaryBeforeNextWord = false;
     }
 
     public TextCommit? CommitBoundary()
@@ -155,6 +171,7 @@ internal sealed class TextSession
         }
 
         _currentWord.Clear();
+        _needsWordBoundaryBeforeNextWord = false;
         return new TextCommit(word, previousWord);
     }
 
@@ -165,6 +182,7 @@ internal sealed class TextSession
         _currentWord.Clear();
         _currentWord.Append(suggestion.ToLowerInvariant());
         CommitBoundary();
+        _needsWordBoundaryBeforeNextWord = false;
 
         return new SuggestionReplacement(typedLength, $"{suggestion} ");
     }
@@ -174,6 +192,7 @@ internal sealed class TextSession
         _currentWord.Clear();
         _previousWords.Clear();
         _boundaryCharactersAfterPreviousWord = 0;
+        _needsWordBoundaryBeforeNextWord = false;
     }
 
     private static void AddParsedWord(List<string> words, StringBuilder word)
