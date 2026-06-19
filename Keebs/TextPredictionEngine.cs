@@ -10,12 +10,14 @@ internal sealed class TextPredictionEngine
     private const int MaxLearnedWords = 5000;
     private const int MaxSuggestions = 4;
     private const int MaxNextWordsPerPrefix = 40;
+    private const int MaxSpellCheckWordLength = 24;
     private const int MissingSeedRank = int.MaxValue;
     private const int UserNextWordWeight = 100;
 
     private static readonly Lazy<string[]> CommonVocabulary = new(() => LoadWordResource("Keebs.Assets.english-common-words.txt"));
     private static readonly Lazy<string[]> DictionaryVocabulary = new(() => LoadWordResource("Keebs.Assets.english-dictionary-words.txt"));
     private static readonly Lazy<HashSet<string>> DictionaryLookup = new(() => DictionaryVocabulary.Value.ToHashSet(StringComparer.OrdinalIgnoreCase));
+    private static readonly Lazy<HashSet<string>> SeedVocabularyLookup = new(BuildSeedVocabularyLookup);
     private static readonly Lazy<Dictionary<string, int>> SeedRank = new(BuildSeedRank);
     private static readonly Lazy<PretrainedModel> Pretrained = new(BuildPretrainedModel);
 
@@ -100,7 +102,7 @@ internal sealed class TextPredictionEngine
     {
         if (!string.IsNullOrWhiteSpace(context.CurrentWord))
         {
-            return CompleteWord(context.CurrentWord);
+            return CompleteWord(context.CurrentWord, context.PreviousWord);
         }
 
         if (!string.IsNullOrWhiteSpace(context.PreviousWord))
@@ -162,7 +164,7 @@ internal sealed class TextPredictionEngine
         SaveProfile();
     }
 
-    private IEnumerable<string> CompleteWord(string prefix)
+    private IEnumerable<string> CompleteWord(string prefix, string previousWord)
     {
         var normalizedPrefix = NormalizePrefix(prefix);
         var candidates = BuiltInVocabulary
@@ -176,6 +178,20 @@ internal sealed class TextPredictionEngine
             .Distinct(StringComparer.OrdinalIgnoreCase);
 
         var ranked = RankCandidates(candidates, string.Empty).ToList();
+        if (ShouldOfferSpellingCorrections(normalizedPrefix, ranked))
+        {
+            var corrections = GetSpellingCorrections(normalizedPrefix, previousWord)
+                .Where(correction => !ranked.Contains(correction, StringComparer.OrdinalIgnoreCase))
+                .ToList();
+
+            if (corrections.Count > 0)
+            {
+                corrections.AddRange(ranked);
+                TrimSuggestions(corrections);
+                return corrections;
+            }
+        }
+
         AddDictionaryFallbacks(ranked, normalizedPrefix);
 
         return ranked.Count == 0 && IsWordLikePrefix(prefix)
@@ -186,6 +202,57 @@ internal sealed class TextPredictionEngine
     private static bool IsWordLikePrefix(string prefix)
     {
         return prefix.Any(char.IsLetter);
+    }
+
+    private static int GetDamerauLevenshteinDistance(string left, string right, int maximumDistance)
+    {
+        if (Math.Abs(left.Length - right.Length) > maximumDistance)
+        {
+            return maximumDistance + 1;
+        }
+
+        var previousPrevious = new int[right.Length + 1];
+        var previous = new int[right.Length + 1];
+        var current = new int[right.Length + 1];
+
+        for (var column = 0; column <= right.Length; column++)
+        {
+            previous[column] = column;
+        }
+
+        for (var row = 1; row <= left.Length; row++)
+        {
+            current[0] = row;
+            var rowMinimum = current[0];
+
+            for (var column = 1; column <= right.Length; column++)
+            {
+                var substitutionCost = left[row - 1] == right[column - 1] ? 0 : 1;
+                var distance = Math.Min(
+                    Math.Min(current[column - 1] + 1, previous[column] + 1),
+                    previous[column - 1] + substitutionCost);
+
+                if (row > 1 &&
+                    column > 1 &&
+                    left[row - 1] == right[column - 2] &&
+                    left[row - 2] == right[column - 1])
+                {
+                    distance = Math.Min(distance, previousPrevious[column - 2] + 1);
+                }
+
+                current[column] = distance;
+                rowMinimum = Math.Min(rowMinimum, distance);
+            }
+
+            if (rowMinimum > maximumDistance)
+            {
+                return maximumDistance + 1;
+            }
+
+            (previousPrevious, previous, current) = (previous, current, previousPrevious);
+        }
+
+        return previous[right.Length];
     }
 
     private IEnumerable<string> RankCandidates(IEnumerable<string> words, string previousWord)
@@ -205,6 +272,91 @@ internal sealed class TextPredictionEngine
             .ThenBy(word => word, StringComparer.OrdinalIgnoreCase)
             .Take(MaxSuggestions)
             .Select(FormatSuggestion);
+    }
+
+    private bool ShouldOfferSpellingCorrections(string word, IReadOnlyCollection<string> completions)
+    {
+        return word.Length is >= 3 and <= MaxSpellCheckWordLength &&
+               word.Any(char.IsLetter) &&
+               !IsKnownWord(word) &&
+               (completions.Count == 0 || completions.All(IsLowConfidenceCompletion));
+    }
+
+    private IEnumerable<string> GetSpellingCorrections(string word, string previousWord)
+    {
+        var maximumDistance = GetMaximumSpellDistance(word);
+        var normalizedPreviousWord = NormalizeWord(previousWord);
+
+        return GetSpellCheckCandidates()
+            .Select(NormalizeWord)
+            .Where(candidate => IsSpellCheckCandidate(word, candidate, maximumDistance))
+            .Distinct(StringComparer.OrdinalIgnoreCase)
+            .Select(candidate => new
+            {
+                Word = candidate,
+                Distance = GetDamerauLevenshteinDistance(word, candidate, maximumDistance)
+            })
+            .Where(candidate => candidate.Distance <= maximumDistance)
+            .OrderBy(candidate => candidate.Distance)
+            .ThenByDescending(candidate => GetNextWordScore(normalizedPreviousWord, candidate.Word))
+            .ThenByDescending(candidate => _acceptedFrequency.TryGetValue(candidate.Word, out var accepted) ? accepted : 0)
+            .ThenByDescending(candidate => _wordFrequency.TryGetValue(candidate.Word, out var frequency) ? frequency : 0)
+            .ThenByDescending(candidate => Pretrained.Value.WordFrequency.TryGetValue(candidate.Word, out var pretrainedFrequency) ? pretrainedFrequency : 0)
+            .ThenBy(candidate => GetSeedRank(candidate.Word))
+            .ThenBy(candidate => candidate.Word.Length)
+            .ThenBy(candidate => candidate.Word, StringComparer.OrdinalIgnoreCase)
+            .Take(MaxSuggestions)
+            .Select(candidate => FormatSuggestion(candidate.Word));
+    }
+
+    private IEnumerable<string> GetSpellCheckCandidates()
+    {
+        return BuiltInVocabulary
+            .Concat(BuiltInContractions)
+            .Concat(CommonVocabulary.Value)
+            .Concat(DictionaryVocabulary.Value)
+            .Concat(Pretrained.Value.WordFrequency.Keys)
+            .Concat(_wordFrequency.Keys)
+            .Concat(_acceptedFrequency.Keys);
+    }
+
+    private static int GetMaximumSpellDistance(string word)
+    {
+        return word.Length <= 4 ? 1 : 2;
+    }
+
+    private static bool IsSpellCheckCandidate(string word, string candidate, int maximumDistance)
+    {
+        return candidate.Length > 0 &&
+               candidate.Length <= MaxSpellCheckWordLength &&
+               !candidate.Equals(word, StringComparison.OrdinalIgnoreCase) &&
+               Math.Abs(candidate.Length - word.Length) <= maximumDistance &&
+               SharesSpellCheckAnchor(word, candidate);
+    }
+
+    private static bool SharesSpellCheckAnchor(string word, string candidate)
+    {
+        return word[0] == candidate[0] ||
+               word.Length > 1 && candidate.Length > 1 && word[0] == candidate[1] && word[1] == candidate[0];
+    }
+
+    private bool IsKnownWord(string word)
+    {
+        return DictionaryLookup.Value.Contains(word) ||
+               SeedVocabularyLookup.Value.Contains(word) ||
+               Pretrained.Value.WordFrequency.ContainsKey(word) ||
+               _wordFrequency.ContainsKey(word) ||
+               _acceptedFrequency.ContainsKey(word);
+    }
+
+    private bool IsLowConfidenceCompletion(string suggestion)
+    {
+        var word = NormalizeWord(suggestion);
+        return word.Length == 0 ||
+               !SeedVocabularyLookup.Value.Contains(word) &&
+               !Pretrained.Value.WordFrequency.ContainsKey(word) &&
+               !_wordFrequency.ContainsKey(word) &&
+               !_acceptedFrequency.ContainsKey(word);
     }
 
     private int GetNextWordScore(string previousWord, string word)
@@ -469,6 +621,16 @@ internal sealed class TextPredictionEngine
         }
 
         return rank;
+    }
+
+    private static HashSet<string> BuildSeedVocabularyLookup()
+    {
+        return BuiltInVocabulary
+            .Concat(BuiltInContractions)
+            .Concat(CommonVocabulary.Value)
+            .Select(NormalizeWord)
+            .Where(word => word.Length > 0)
+            .ToHashSet(StringComparer.OrdinalIgnoreCase);
     }
 
     private static PretrainedModel BuildPretrainedModel()

@@ -66,6 +66,29 @@ public sealed class TextPredictionEngineTests
         Assert.Contains("I'm", iSuggestions);
     }
 
+    [Theory]
+    [InlineData("teh", "the")]
+    [InlineData("recieve", "receive")]
+    [InlineData("adress", "address")]
+    public void SuggestsSpellingCorrectionsWhenCurrentWordIsMisspelled(string misspelledWord, string correction)
+    {
+        var engine = CreateEngine();
+        var suggestions = engine.GetSuggestions(new PredictionContext(misspelledWord, [])).ToArray();
+
+        Assert.Equal(correction, suggestions[0]);
+    }
+
+    [Fact]
+    public void DoesNotSpellCorrectKnownTypedWords()
+    {
+        var engine = CreateEngine();
+        engine.LearnTypedText([new TextCommit("quincboard", string.Empty)]);
+
+        var suggestions = engine.GetSuggestions(new PredictionContext("quincboard", [])).ToArray();
+
+        Assert.Equal("quincboard", suggestions[0]);
+    }
+
     [Fact]
     public void UsesBundledCorpusForNextWordSuggestions()
     {
