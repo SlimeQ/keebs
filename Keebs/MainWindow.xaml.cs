@@ -553,7 +553,11 @@ public partial class MainWindow : Window, INotifyPropertyChanged
 
         if (_swipeGestureActive)
         {
-            TryCommitSwipe();
+            var committedSwipe = TryCommitSwipe();
+            if (!committedSwipe && ShouldFallbackSwipeToTap(position) && _pointerDownKey is { } fallbackKey)
+            {
+                PressKey(fallbackKey);
+            }
         }
         else if (_pointerDownKey is { } pointerDownKey)
         {
@@ -562,6 +566,17 @@ public partial class MainWindow : Window, INotifyPropertyChanged
 
         ResetPointerGesture();
         e.Handled = true;
+    }
+
+    private bool ShouldFallbackSwipeToTap(Point position)
+    {
+        if (_pointerDownKey is null ||
+            _swipeLetters.Distinct().Count() >= MinimumSwipeLetters)
+        {
+            return false;
+        }
+
+        return GetKeyAt(position)?.Id == _pointerDownKey.Id;
     }
 
     private void AddSwipePoint(Point position)

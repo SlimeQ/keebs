@@ -273,6 +273,70 @@ public sealed class MainWindowLayoutTests
         }
     }
 
+    [Fact]
+    public void OneKeySwipeGestureFallsBackToTap()
+    {
+        Exception? threadException = null;
+        var thread = new Thread(() =>
+        {
+            try
+            {
+                var window = new MainWindow(new TextPredictionEngine(GetProfilePath()))
+                {
+                    Width = 1000,
+                    Height = 360
+                };
+
+                window.Show();
+                window.UpdateLayout();
+
+                var q = FindKeyButton(window, "Q");
+                var key = q.Tag!;
+                var center = q.TranslatePoint(
+                    new System.Windows.Point(q.ActualWidth / 2, q.ActualHeight / 2),
+                    window.KeyboardGrid);
+
+                typeof(MainWindow)
+                    .GetField("_pointerDownKey", System.Reflection.BindingFlags.Instance | System.Reflection.BindingFlags.NonPublic)!
+                    .SetValue(window, key);
+
+                var swipeLetters = (List<char>)typeof(MainWindow)
+                    .GetField("_swipeLetters", System.Reflection.BindingFlags.Instance | System.Reflection.BindingFlags.NonPublic)!
+                    .GetValue(window)!;
+
+                swipeLetters.Add('q');
+
+                var shouldFallback = (bool)typeof(MainWindow)
+                    .GetMethod("ShouldFallbackSwipeToTap", System.Reflection.BindingFlags.Instance | System.Reflection.BindingFlags.NonPublic)!
+                    .Invoke(window, [center])!;
+
+                swipeLetters.Add('w');
+
+                var shouldNotFallback = (bool)typeof(MainWindow)
+                    .GetMethod("ShouldFallbackSwipeToTap", System.Reflection.BindingFlags.Instance | System.Reflection.BindingFlags.NonPublic)!
+                    .Invoke(window, [center])!;
+
+                Assert.True(shouldFallback);
+                Assert.False(shouldNotFallback);
+
+                window.Close();
+            }
+            catch (Exception ex)
+            {
+                threadException = ex;
+            }
+        });
+
+        thread.SetApartmentState(ApartmentState.STA);
+        thread.Start();
+        thread.Join();
+
+        if (threadException is not null)
+        {
+            throw threadException;
+        }
+    }
+
     private static System.Windows.Controls.Button FindKeyButton(MainWindow window, string keyId)
     {
         return window.KeyboardGrid.Children
