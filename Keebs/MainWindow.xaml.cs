@@ -1,5 +1,6 @@
 using System.Collections.ObjectModel;
 using System.ComponentModel;
+using System.Diagnostics;
 using System.Runtime.CompilerServices;
 using System.Runtime.InteropServices;
 using System.Threading;
@@ -19,6 +20,7 @@ public partial class MainWindow : Window, INotifyPropertyChanged
     private readonly TextSession _textSession = new();
     private readonly SensitiveInputMonitor _sensitiveInputMonitor = new();
     private readonly PhysicalKeyboardMonitor _physicalKeyboardMonitor = new();
+    private readonly GitHubReleaseUpdater _releaseUpdater = new();
     private static readonly FontFamily TextKeyFontFamily = new("Segoe UI Variable Text, Segoe UI");
     private static readonly FontFamily IconKeyFontFamily = new("Segoe UI Symbol, Segoe UI");
     private bool _shift;
@@ -655,6 +657,72 @@ public partial class MainWindow : Window, INotifyPropertyChanged
         }
 
         RefreshPrivacyState();
+    }
+
+    private async void Update_Click(object sender, RoutedEventArgs e)
+    {
+        await CheckForUpdatesAsync();
+    }
+
+    private async Task CheckForUpdatesAsync()
+    {
+        UpdateButton.IsEnabled = false;
+        var previousHint = FooterHintText;
+
+        try
+        {
+            FooterHintText = "Checking GitHub for updates...";
+            var update = await _releaseUpdater.CheckForUpdateAsync();
+            FooterHintText = update.Message;
+
+            if (!update.IsUpdateAvailable)
+            {
+                return;
+            }
+
+            if (string.IsNullOrWhiteSpace(update.InstallerUrl))
+            {
+                if (!string.IsNullOrWhiteSpace(update.ReleaseUrl))
+                {
+                    OpenUrl(update.ReleaseUrl);
+                }
+
+                FooterHintText = "Update found, but no MSI installer was attached.";
+                return;
+            }
+
+            FooterHintText = $"Downloading Keebs {update.LatestVersion}...";
+            var installerPath = await _releaseUpdater.DownloadInstallerAsync(update);
+
+            FooterHintText = "Launching installer...";
+            GitHubReleaseUpdater.LaunchInstaller(installerPath);
+            Close();
+        }
+        catch (Exception ex)
+        {
+            FooterHintText = $"Update check failed: {ex.Message}";
+        }
+        finally
+        {
+            if (IsLoaded)
+            {
+                UpdateButton.IsEnabled = true;
+            }
+
+            if (FooterHintText.Length == 0)
+            {
+                FooterHintText = previousHint;
+            }
+        }
+    }
+
+    private static void OpenUrl(string url)
+    {
+        Process.Start(new ProcessStartInfo
+        {
+            FileName = url,
+            UseShellExecute = true
+        });
     }
 
     private bool PredictionsSuppressed => !_predictionsEnabled || _sensitiveInputMonitor.IsSensitive;

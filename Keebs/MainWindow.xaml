@@ -126,6 +126,12 @@
             <Setter Property="BorderBrush" Value="#6B5F77" />
         </Style>
 
+        <Style x:Key="FooterButton" TargetType="Button" BasedOn="{StaticResource UtilityButton}">
+            <Setter Property="MinWidth" Value="64" />
+            <Setter Property="Padding" Value="8,1" />
+            <Setter Property="FontWeight" Value="Bold" />
+        </Style>
+
         <Style TargetType="CheckBox">
             <Setter Property="Focusable" Value="False" />
             <Setter Property="Foreground" Value="{StaticResource TextPrimaryBrush}" />
@@ -227,6 +233,7 @@
                 <ColumnDefinition Width="Auto" />
                 <ColumnDefinition Width="Auto" />
                 <ColumnDefinition Width="Auto" />
+                <ColumnDefinition Width="Auto" />
                 <ColumnDefinition Width="*" />
             </Grid.ColumnDefinitions>
 
@@ -279,7 +286,16 @@
                 </Grid>
             </Border>
 
-            <TextBlock Grid.Column="3"
+            <Button x:Name="UpdateButton"
+                    Grid.Column="3"
+                    Style="{StaticResource FooterButton}"
+                    Margin="0,0,10,0"
+                    FontSize="{Binding RelativeSource={RelativeSource AncestorType=Window}, Path=StatusFontSize}"
+                    Content="Update"
+                    ToolTip="Check for updates"
+                    Click="Update_Click" />
+
+            <TextBlock Grid.Column="4"
                        x:Name="FooterHint"
                        VerticalAlignment="Center"
                        FontSize="{Binding RelativeSource={RelativeSource AncestorType=Window}, Path=StatusFontSize}"

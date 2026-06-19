@@ -75,6 +75,22 @@ python .\tools\postprocess_icon.py `
   upgrade while preserving learned local frequencies.
 - Known browser accessibility artifacts such as Firefox's stray `xhtml` context
   are rejected and removed from migrated prediction profiles.
+- Press `Update` to check the latest GitHub release, download the attached MSI,
+  and launch the installer.
+
+## Releases
+
+GitHub releases are built automatically from version tags in the canonical
+`SlimeQ/keebs` repository.
+
+```powershell
+git tag v0.1.21
+git push origin main --tags
+```
+
+The release workflow runs tests, builds `Keebs-Setup-win-x64.msi`, and attaches
+the MSI to the GitHub release. The in-app updater checks
+`https://github.com/SlimeQ/keebs/releases/latest`.
 
 ## Known limits
 
