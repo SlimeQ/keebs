@@ -2,7 +2,7 @@
   <Package
     Name="Keebs"
     Manufacturer="Keebs"
-    Version="0.1.21.0"
+    Version="0.1.22.0"
     UpgradeCode="8b4c3fe3-0a14-44e2-afdb-89e13f936324"
     Scope="perMachine">
 
