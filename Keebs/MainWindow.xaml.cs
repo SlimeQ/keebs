@@ -7,6 +7,7 @@ using System.Threading;
 using System.Threading.Tasks;
 using System.Windows;
 using System.Windows.Controls;
+using System.Windows.Input;
 using System.Windows.Interop;
 using System.Windows.Media;
 
@@ -15,14 +16,22 @@ namespace Keebs;
 public partial class MainWindow : Window, INotifyPropertyChanged
 {
     private static readonly TimeSpan FocusedContextReadTimeout = TimeSpan.FromMilliseconds(300);
+    private const double SwipeTapThreshold = 12;
+    private const int MinimumSwipeLetters = 2;
+    private const int SwipeCandidateLimit = 192;
+    private const double SwipeMaximumGeometryScore = 0.78;
+    private const double SwipeMinimumScoreMargin = 0.14;
     private readonly ObservableCollection<string> _suggestions = [];
     private readonly TextPredictionEngine _predictionEngine;
     private readonly TextSession _textSession = new();
     private readonly SensitiveInputMonitor _sensitiveInputMonitor = new();
     private readonly PhysicalKeyboardMonitor _physicalKeyboardMonitor = new();
     private readonly GitHubReleaseUpdater _releaseUpdater = new();
+    private readonly List<char> _swipeLetters = [];
+    private readonly List<Point> _swipePoints = [];
     private static readonly FontFamily TextKeyFontFamily = new("Segoe UI Variable Text, Segoe UI");
     private static readonly FontFamily IconKeyFontFamily = new("Segoe UI Symbol, Segoe UI");
+    private TouchDevice? _activeTouchDevice;
     private bool _shift;
     private bool _capsLock;
     private bool _control;
@@ -31,8 +40,12 @@ public partial class MainWindow : Window, INotifyPropertyChanged
     private bool _predictionsEnabled = true;
     private bool _learningEnabled = true;
     private bool _physicalSelectionActive;
+    private bool _pointerGestureActive;
+    private bool _swipeGestureActive;
     private int _focusedContextReadInFlight;
     private int _focusedContextRequestId;
+    private Point _pointerDownPosition;
+    private KeySpec? _pointerDownKey;
     private double _keyFontSize = 14;
     private double _statusFontSize = 12;
     private double _statusDotSize = 7;
@@ -54,6 +67,12 @@ public partial class MainWindow : Window, INotifyPropertyChanged
         DataContext = this;
         SuggestionStrip.ItemsSource = _suggestions;
         BuildKeyboard();
+        KeyboardGrid.PreviewMouseLeftButtonDown += KeyboardGrid_PreviewMouseLeftButtonDown;
+        KeyboardGrid.PreviewMouseMove += KeyboardGrid_PreviewMouseMove;
+        KeyboardGrid.PreviewMouseLeftButtonUp += KeyboardGrid_PreviewMouseLeftButtonUp;
+        KeyboardGrid.TouchDown += KeyboardGrid_TouchDown;
+        KeyboardGrid.TouchMove += KeyboardGrid_TouchMove;
+        KeyboardGrid.TouchUp += KeyboardGrid_TouchUp;
 
         _sensitiveInputMonitor.FocusChanged += (_, _) =>
             Dispatcher.BeginInvoke(() =>
@@ -347,6 +366,11 @@ public partial class MainWindow : Window, INotifyPropertyChanged
             return;
         }
 
+        PressKey(key);
+    }
+
+    private void PressKey(KeySpec key)
+    {
         try
         {
             switch (key.Id)
@@ -410,6 +434,489 @@ public partial class MainWindow : Window, INotifyPropertyChanged
 
         ResetTransientModifiers();
         RefreshSuggestions();
+    }
+
+    private void KeyboardGrid_PreviewMouseLeftButtonDown(object sender, MouseButtonEventArgs e)
+    {
+        BeginPointerGesture(e.GetPosition(KeyboardGrid), e);
+    }
+
+    private void KeyboardGrid_PreviewMouseMove(object sender, MouseEventArgs e)
+    {
+        if (!_pointerGestureActive || e.LeftButton != MouseButtonState.Pressed)
+        {
+            return;
+        }
+
+        ContinuePointerGesture(e.GetPosition(KeyboardGrid), e);
+    }
+
+    private void KeyboardGrid_PreviewMouseLeftButtonUp(object sender, MouseButtonEventArgs e)
+    {
+        EndPointerGesture(e.GetPosition(KeyboardGrid), e);
+    }
+
+    private void KeyboardGrid_TouchDown(object? sender, TouchEventArgs e)
+    {
+        if (_activeTouchDevice is not null)
+        {
+            return;
+        }
+
+        _activeTouchDevice = e.TouchDevice;
+        KeyboardGrid.CaptureTouch(e.TouchDevice);
+        BeginPointerGesture(e.GetTouchPoint(KeyboardGrid).Position, e);
+    }
+
+    private void KeyboardGrid_TouchMove(object? sender, TouchEventArgs e)
+    {
+        if (e.TouchDevice != _activeTouchDevice)
+        {
+            return;
+        }
+
+        ContinuePointerGesture(e.GetTouchPoint(KeyboardGrid).Position, e);
+    }
+
+    private void KeyboardGrid_TouchUp(object? sender, TouchEventArgs e)
+    {
+        if (e.TouchDevice != _activeTouchDevice)
+        {
+            return;
+        }
+
+        EndPointerGesture(e.GetTouchPoint(KeyboardGrid).Position, e);
+        KeyboardGrid.ReleaseTouchCapture(e.TouchDevice);
+        _activeTouchDevice = null;
+    }
+
+    private void BeginPointerGesture(Point position, RoutedEventArgs e)
+    {
+        var key = GetKeyAt(position);
+        if (key is null)
+        {
+            return;
+        }
+
+        _pointerGestureActive = true;
+        _swipeGestureActive = false;
+        _pointerDownPosition = position;
+        _pointerDownKey = key;
+        _swipeLetters.Clear();
+        _swipePoints.Clear();
+        SwipeTrailLine.Points.Clear();
+        AddSwipePoint(position);
+        AddSwipeKey(key);
+        KeyboardGrid.CaptureMouse();
+        e.Handled = true;
+    }
+
+    private void ContinuePointerGesture(Point position, RoutedEventArgs e)
+    {
+        if (!_pointerGestureActive)
+        {
+            return;
+        }
+
+        if (!_swipeGestureActive &&
+            GetDistance(_pointerDownPosition, position) >= SwipeTapThreshold)
+        {
+            _swipeGestureActive = true;
+            SwipeTrailLine.Opacity = 0.82;
+        }
+
+        if (_swipeGestureActive)
+        {
+            AddSwipePoint(position);
+            if (GetKeyAt(position) is { } key)
+            {
+                AddSwipeKey(key);
+            }
+        }
+
+        e.Handled = true;
+    }
+
+    private void EndPointerGesture(Point position, RoutedEventArgs e)
+    {
+        if (!_pointerGestureActive)
+        {
+            return;
+        }
+
+        if (_swipeGestureActive && GetKeyAt(position) is { } key)
+        {
+            AddSwipeKey(key);
+        }
+
+        KeyboardGrid.ReleaseMouseCapture();
+
+        if (_swipeGestureActive)
+        {
+            TryCommitSwipe();
+        }
+        else if (_pointerDownKey is { } pointerDownKey)
+        {
+            PressKey(pointerDownKey);
+        }
+
+        ResetPointerGesture();
+        e.Handled = true;
+    }
+
+    private void AddSwipePoint(Point position)
+    {
+        if (SwipeTrailLine.Points.Count == 0 ||
+            GetDistance(SwipeTrailLine.Points[SwipeTrailLine.Points.Count - 1], position) >= 5)
+        {
+            SwipeTrailLine.Points.Add(position);
+            _swipePoints.Add(position);
+        }
+    }
+
+    private void AddSwipeKey(KeySpec key)
+    {
+        if (key.Text is not { Length: 1 } text || !char.IsLetter(text[0]))
+        {
+            return;
+        }
+
+        var letter = char.ToLowerInvariant(text[0]);
+        if (_swipeLetters.Count == 0 || _swipeLetters[^1] != letter)
+        {
+            _swipeLetters.Add(letter);
+        }
+    }
+
+    private bool TryCommitSwipe()
+    {
+        if (PredictionsSuppressed || _control || _alt || _windows ||
+            _swipeLetters.Distinct().Count() < MinimumSwipeLetters)
+        {
+            return false;
+        }
+
+        var suggestion = GetBestSwipeSuggestion();
+        if (string.IsNullOrWhiteSpace(suggestion))
+        {
+            return false;
+        }
+
+        var output = GetSwipeOutputText(suggestion);
+        try
+        {
+            KeyboardInput.SendText($"{output} ");
+            LearnTypedText(_textSession.TypeText($"{output} "));
+        }
+        catch (InvalidOperationException ex)
+        {
+            ShowInputError(ex);
+            return false;
+        }
+
+        ResetTransientModifiers();
+        RefreshSuggestions();
+        return true;
+    }
+
+    private string? GetBestSwipeSuggestion()
+    {
+        if (_swipePoints.Count < 4)
+        {
+            return null;
+        }
+
+        var tracedLetters = new string([.. _swipeLetters]);
+        var keyUnit = GetAverageLetterKeySize();
+        if (keyUnit <= 0)
+        {
+            return null;
+        }
+
+        var ranked = _predictionEngine
+            .GetSwipeCandidates(tracedLetters, _textSession.Context, SwipeCandidateLimit)
+            .Select(candidate => new
+            {
+                Candidate = candidate,
+                Score = TryGetSwipeGeometryScore(candidate, keyUnit) + GetSwipeLetterMismatchPenalty(candidate)
+            })
+            .Where(candidate => candidate.Score.HasValue)
+            .OrderBy(candidate => candidate.Score!.Value)
+            .ThenBy(candidate => candidate.Candidate.Length)
+            .ToArray();
+
+        if (ranked.Length == 0 || ranked[0].Score!.Value > SwipeMaximumGeometryScore)
+        {
+            return null;
+        }
+
+        if (ranked.Length > 1 &&
+            ranked[1].Score!.Value - ranked[0].Score!.Value < SwipeMinimumScoreMargin)
+        {
+            return null;
+        }
+
+        return ranked[0].Candidate;
+    }
+
+    private double? TryGetSwipeGeometryScore(string candidate, double keyUnit)
+    {
+        var candidatePath = GetCandidateSwipePath(candidate);
+        if (candidatePath.Count < 2)
+        {
+            return null;
+        }
+
+        const int sampleCount = 32;
+        var strokeSamples = ResamplePolyline(_swipePoints, sampleCount);
+        var candidateSamples = ResamplePolyline(candidatePath, sampleCount);
+        if (strokeSamples.Count != sampleCount || candidateSamples.Count != sampleCount)
+        {
+            return null;
+        }
+
+        var total = 0.0;
+        for (var index = 0; index < sampleCount; index++)
+        {
+            total += GetDistance(strokeSamples[index], candidateSamples[index]) / keyUnit;
+        }
+
+        var average = total / sampleCount;
+        var endpointPenalty =
+            (GetDistance(strokeSamples[0], candidateSamples[0]) +
+             GetDistance(strokeSamples[^1], candidateSamples[^1])) /
+            (keyUnit * 2);
+
+        return average + (endpointPenalty * 0.45);
+    }
+
+    private double GetSwipeLetterMismatchPenalty(string candidate)
+    {
+        var tracePattern = new string([.. _swipeLetters]);
+        var candidatePattern = NormalizeSwipeLetters(candidate);
+        if (tracePattern.Length == 0 || candidatePattern.Length == 0)
+        {
+            return 0;
+        }
+
+        var editDistance = GetLevenshteinDistance(tracePattern, candidatePattern);
+        var ignoredLetters = Math.Max(0, tracePattern.Length - candidatePattern.Length - 2);
+        return (editDistance * 0.045) + (ignoredLetters * 0.11);
+    }
+
+    private static string NormalizeSwipeLetters(string value)
+    {
+        var letters = new List<char>();
+        char? previous = null;
+
+        foreach (var character in value)
+        {
+            var letter = char.ToLowerInvariant(character);
+            if (!char.IsLetter(letter) || letter == previous)
+            {
+                continue;
+            }
+
+            letters.Add(letter);
+            previous = letter;
+        }
+
+        return new string([.. letters]);
+    }
+
+    private static int GetLevenshteinDistance(string left, string right)
+    {
+        var previous = new int[right.Length + 1];
+        var current = new int[right.Length + 1];
+
+        for (var column = 0; column <= right.Length; column++)
+        {
+            previous[column] = column;
+        }
+
+        for (var row = 1; row <= left.Length; row++)
+        {
+            current[0] = row;
+
+            for (var column = 1; column <= right.Length; column++)
+            {
+                var substitutionCost = left[row - 1] == right[column - 1] ? 0 : 1;
+                current[column] = Math.Min(
+                    Math.Min(current[column - 1] + 1, previous[column] + 1),
+                    previous[column - 1] + substitutionCost);
+            }
+
+            (previous, current) = (current, previous);
+        }
+
+        return previous[right.Length];
+    }
+
+    private IReadOnlyList<Point> GetCandidateSwipePath(string candidate)
+    {
+        var points = new List<Point>();
+        char? previousLetter = null;
+
+        foreach (var character in candidate)
+        {
+            var letter = char.ToLowerInvariant(character);
+            if (!char.IsLetter(letter) || letter == previousLetter)
+            {
+                continue;
+            }
+
+            if (TryGetLetterKeyCenter(letter, out var center))
+            {
+                points.Add(center);
+                previousLetter = letter;
+            }
+        }
+
+        return points;
+    }
+
+    private bool TryGetLetterKeyCenter(char letter, out Point center)
+    {
+        foreach (var button in GetKeyButtons())
+        {
+            if (button.Tag is not KeySpec { Text.Length: 1 } key ||
+                char.ToLowerInvariant(key.Text[0]) != letter)
+            {
+                continue;
+            }
+
+            center = button.TransformToAncestor(KeyboardGrid)
+                .Transform(new Point(button.ActualWidth / 2, button.ActualHeight / 2));
+            return true;
+        }
+
+        center = default;
+        return false;
+    }
+
+    private double GetAverageLetterKeySize()
+    {
+        var sizes = GetKeyButtons()
+            .Where(button => button.Tag is KeySpec { Text.Length: 1 } key && char.IsLetter(key.Text[0]))
+            .Select(button => Math.Min(button.ActualWidth, button.ActualHeight))
+            .Where(size => size > 0)
+            .Order()
+            .ToArray();
+
+        return sizes.Length == 0 ? 0 : sizes[sizes.Length / 2];
+    }
+
+    private IEnumerable<Button> GetKeyButtons()
+    {
+        return KeyboardGrid.Children
+            .OfType<Grid>()
+            .SelectMany(row => row.Children.OfType<Button>());
+    }
+
+    private static IReadOnlyList<Point> ResamplePolyline(IReadOnlyList<Point> points, int sampleCount)
+    {
+        if (points.Count == 0 || sampleCount <= 0)
+        {
+            return [];
+        }
+
+        if (points.Count == 1 || sampleCount == 1)
+        {
+            return Enumerable.Repeat(points[0], sampleCount).ToArray();
+        }
+
+        var distances = new double[points.Count];
+        for (var index = 1; index < points.Count; index++)
+        {
+            distances[index] = distances[index - 1] + GetDistance(points[index - 1], points[index]);
+        }
+
+        var totalLength = distances[^1];
+        if (totalLength <= 0)
+        {
+            return Enumerable.Repeat(points[0], sampleCount).ToArray();
+        }
+
+        var samples = new Point[sampleCount];
+        var segmentIndex = 1;
+
+        for (var sampleIndex = 0; sampleIndex < sampleCount; sampleIndex++)
+        {
+            var targetDistance = totalLength * sampleIndex / (sampleCount - 1);
+            while (segmentIndex < distances.Length - 1 && distances[segmentIndex] < targetDistance)
+            {
+                segmentIndex++;
+            }
+
+            var segmentStart = distances[segmentIndex - 1];
+            var segmentLength = distances[segmentIndex] - segmentStart;
+            var ratio = segmentLength <= 0 ? 0 : (targetDistance - segmentStart) / segmentLength;
+            var start = points[segmentIndex - 1];
+            var end = points[segmentIndex];
+            samples[sampleIndex] = new Point(
+                start.X + ((end.X - start.X) * ratio),
+                start.Y + ((end.Y - start.Y) * ratio));
+        }
+
+        return samples;
+    }
+
+    private string GetSwipeOutputText(string suggestion)
+    {
+        if (suggestion.Length == 0)
+        {
+            return suggestion;
+        }
+
+        if (_capsLock && !_shift)
+        {
+            return suggestion.ToUpperInvariant();
+        }
+
+        if (!_shift)
+        {
+            return suggestion;
+        }
+
+        return suggestion.Length == 1
+            ? suggestion.ToUpperInvariant()
+            : $"{char.ToUpperInvariant(suggestion[0])}{suggestion[1..]}";
+    }
+
+    private void ResetPointerGesture()
+    {
+        _pointerGestureActive = false;
+        _swipeGestureActive = false;
+        _pointerDownKey = null;
+        _swipeLetters.Clear();
+        _swipePoints.Clear();
+        SwipeTrailLine.Opacity = 0;
+        SwipeTrailLine.Points.Clear();
+    }
+
+    private KeySpec? GetKeyAt(Point position)
+    {
+        var hit = VisualTreeHelper.HitTest(KeyboardGrid, position);
+        var current = hit?.VisualHit as DependencyObject;
+
+        while (current is not null)
+        {
+            if (current is Button { Tag: KeySpec key })
+            {
+                return key;
+            }
+
+            current = VisualTreeHelper.GetParent(current);
+        }
+
+        return null;
+    }
+
+    private static double GetDistance(Point left, Point right)
+    {
+        var x = left.X - right.X;
+        var y = left.Y - right.Y;
+        return Math.Sqrt((x * x) + (y * y));
     }
 
     private void ToggleModifier(ref bool modifier)

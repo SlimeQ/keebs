@@ -56,6 +56,8 @@ python .\tools\postprocess_icon.py `
 
 - Floating, topmost WPF keyboard window.
 - Uses `SendInput` so key taps go to the currently focused app.
+- Supports mouse or touch swipe typing across letter keys, resolved locally from
+  bundled and learned vocabulary.
 - Marks the keyboard window as no-activate so clicking keys should not steal focus.
 - Updates predictions from physical key-down events so hardware keyboard typing
   works even when an app does not expose focused text through UI Automation.

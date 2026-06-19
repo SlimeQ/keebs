@@ -134,6 +134,44 @@ internal sealed class TextPredictionEngine
         return RankCandidates(["the", "I", "we", "you"], string.Empty);
     }
 
+    public IEnumerable<string> GetSwipeSuggestions(string tracedLetters, PredictionContext context)
+    {
+        return GetSwipeCandidates(tracedLetters, context).Take(MaxSuggestions);
+    }
+
+    public IEnumerable<string> GetSwipeCandidates(string tracedLetters, PredictionContext context, int maxCandidates = 96)
+    {
+        var pattern = NormalizeSwipePattern(tracedLetters);
+        if (pattern.Length < 2)
+        {
+            return [];
+        }
+
+        var normalizedPreviousWord = NormalizeWord(context.PreviousWord);
+        return GetVocabularyCandidates()
+            .Concat(DictionaryVocabulary.Value)
+            .Select(NormalizeWord)
+            .Where(word => word.Length >= 2)
+            .Distinct(StringComparer.OrdinalIgnoreCase)
+            .Select(word => new
+            {
+                Word = word,
+                Match = GetSwipeMatch(pattern, NormalizeSwipePattern(word))
+            })
+            .Where(candidate => candidate.Match is not null)
+            .OrderBy(candidate => candidate.Match!.EditDistance)
+            .ThenBy(candidate => candidate.Match!.SkippedLetters)
+            .ThenByDescending(candidate => GetNextWordScore(normalizedPreviousWord, candidate.Word))
+            .ThenByDescending(candidate => _acceptedFrequency.TryGetValue(candidate.Word, out var accepted) ? accepted : 0)
+            .ThenByDescending(candidate => _wordFrequency.TryGetValue(candidate.Word, out var frequency) ? frequency : 0)
+            .ThenByDescending(candidate => Pretrained.Value.WordFrequency.TryGetValue(candidate.Word, out var pretrainedFrequency) ? pretrainedFrequency : 0)
+            .ThenBy(candidate => GetSeedRank(candidate.Word))
+            .ThenBy(candidate => candidate.Word.Length)
+            .ThenBy(candidate => candidate.Word, StringComparer.OrdinalIgnoreCase)
+            .Take(maxCandidates)
+            .Select(candidate => FormatSuggestion(candidate.Word));
+    }
+
     public void LearnTypedText(IEnumerable<TextCommit> commits)
     {
         var learned = false;
@@ -167,12 +205,7 @@ internal sealed class TextPredictionEngine
     private IEnumerable<string> CompleteWord(string prefix, string previousWord)
     {
         var normalizedPrefix = NormalizePrefix(prefix);
-        var candidates = BuiltInVocabulary
-            .Concat(BuiltInContractions)
-            .Concat(CommonVocabulary.Value)
-            .Concat(Pretrained.Value.WordFrequency.Keys)
-            .Concat(_wordFrequency.Keys)
-            .Concat(_acceptedFrequency.Keys)
+        var candidates = GetVocabularyCandidates()
             .Where(word => word.StartsWith(normalizedPrefix, StringComparison.OrdinalIgnoreCase) &&
                            !word.Equals(normalizedPrefix, StringComparison.OrdinalIgnoreCase))
             .Distinct(StringComparer.OrdinalIgnoreCase);
@@ -197,6 +230,85 @@ internal sealed class TextPredictionEngine
         return ranked.Count == 0 && IsWordLikePrefix(prefix)
             ? [normalizedPrefix]
             : ranked;
+    }
+
+    private IEnumerable<string> GetVocabularyCandidates()
+    {
+        return BuiltInVocabulary
+            .Concat(BuiltInContractions)
+            .Concat(CommonVocabulary.Value)
+            .Concat(Pretrained.Value.WordFrequency.Keys)
+            .Concat(_wordFrequency.Keys)
+            .Concat(_acceptedFrequency.Keys);
+    }
+
+    private static SwipeMatch? GetSwipeMatch(string pattern, string wordPattern)
+    {
+        if (wordPattern.Length < 2 ||
+            pattern[0] != wordPattern[0] ||
+            pattern[^1] != wordPattern[^1])
+        {
+            return null;
+        }
+
+        var editDistance = GetLevenshteinDistance(pattern, wordPattern);
+        var maximumDistance = Math.Max(1, Math.Min(4, Math.Max(pattern.Length, wordPattern.Length) / 3));
+        if (editDistance > maximumDistance && !IsOrderedSubsequence(wordPattern, pattern))
+        {
+            return null;
+        }
+
+        var skippedLetters = Math.Max(0, pattern.Length - wordPattern.Length);
+        return new SwipeMatch(editDistance, skippedLetters);
+    }
+
+    private static bool IsOrderedSubsequence(string expectedLetters, string tracedLetters)
+    {
+        var expectedIndex = 0;
+
+        foreach (var letter in tracedLetters)
+        {
+            if (letter != expectedLetters[expectedIndex])
+            {
+                continue;
+            }
+
+            expectedIndex++;
+            if (expectedIndex == expectedLetters.Length)
+            {
+                return true;
+            }
+        }
+
+        return false;
+    }
+
+    private static int GetLevenshteinDistance(string left, string right)
+    {
+        var previous = new int[right.Length + 1];
+        var current = new int[right.Length + 1];
+
+        for (var column = 0; column <= right.Length; column++)
+        {
+            previous[column] = column;
+        }
+
+        for (var row = 1; row <= left.Length; row++)
+        {
+            current[0] = row;
+
+            for (var column = 1; column <= right.Length; column++)
+            {
+                var substitutionCost = left[row - 1] == right[column - 1] ? 0 : 1;
+                current[column] = Math.Min(
+                    Math.Min(current[column - 1] + 1, previous[column] + 1),
+                    previous[column - 1] + substitutionCost);
+            }
+
+            (previous, current) = (current, previous);
+        }
+
+        return previous[right.Length];
     }
 
     private static bool IsWordLikePrefix(string prefix)
@@ -267,7 +379,7 @@ internal sealed class TextPredictionEngine
             .ThenByDescending(word => _acceptedFrequency.TryGetValue(word, out var accepted) ? accepted : 0)
             .ThenByDescending(word => _wordFrequency.TryGetValue(word, out var frequency) ? frequency : 0)
             .ThenByDescending(word => Pretrained.Value.WordFrequency.TryGetValue(word, out var frequency) ? frequency : 0)
-            .ThenBy(GetSeedRank)
+            .ThenBy(word => GetSeedRank(word))
             .ThenBy(word => word.Length)
             .ThenBy(word => word, StringComparer.OrdinalIgnoreCase)
             .Take(MaxSuggestions)
@@ -582,6 +694,26 @@ internal sealed class TextPredictionEngine
             : string.Empty;
     }
 
+    private static string NormalizeSwipePattern(string value)
+    {
+        var letters = new List<char>();
+        char? previous = null;
+
+        foreach (var character in value)
+        {
+            var normalized = char.ToLowerInvariant(character);
+            if (!char.IsLetter(normalized) || normalized == previous)
+            {
+                continue;
+            }
+
+            letters.Add(normalized);
+            previous = normalized;
+        }
+
+        return new string([.. letters]);
+    }
+
     private static bool IsRejectedPredictionWord(string word)
     {
         return word.Equals("xhtml", StringComparison.OrdinalIgnoreCase);
@@ -843,4 +975,6 @@ internal sealed class TextPredictionEngine
     private sealed record PretrainedModel(
         Dictionary<string, int> WordFrequency,
         Dictionary<string, Dictionary<string, int>> NextWordFrequency);
+
+    private sealed record SwipeMatch(int EditDistance, int SkippedLetters);
 }

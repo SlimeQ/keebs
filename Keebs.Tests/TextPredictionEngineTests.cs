@@ -185,6 +185,37 @@ public sealed class TextPredictionEngineTests
         Assert.Equal("skin", suggestions[0]);
     }
 
+    [Fact]
+    public void ResolvesSwipeTraceWithRepeatedLetters()
+    {
+        var engine = CreateEngine();
+
+        var suggestions = engine.GetSwipeSuggestions("hheelloo", new PredictionContext(string.Empty, [])).ToArray();
+
+        Assert.Equal("hello", suggestions[0]);
+    }
+
+    [Fact]
+    public void ResolvesSwipeTraceWithIncidentalKeys()
+    {
+        var engine = CreateEngine();
+
+        var suggestions = engine.GetSwipeSuggestions("keuyboard", new PredictionContext(string.Empty, [])).ToArray();
+
+        Assert.Contains("keyboard", suggestions);
+    }
+
+    [Fact]
+    public void ResolvesLearnedSwipeWords()
+    {
+        var engine = CreateEngine();
+        engine.LearnTypedText([new TextCommit("quincboard", string.Empty)]);
+
+        var suggestions = engine.GetSwipeSuggestions("qincbord", new PredictionContext(string.Empty, [])).ToArray();
+
+        Assert.Equal("quincboard", suggestions[0]);
+    }
+
     private static TextPredictionEngine CreateEngine()
     {
         return new TextPredictionEngine(GetProfilePath());

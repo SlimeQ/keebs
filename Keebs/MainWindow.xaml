@@ -224,8 +224,20 @@
                 Background="{StaticResource KeyboardDeckBrush}"
                 BorderBrush="#2F3744"
                 BorderThickness="1">
-        <Grid x:Name="KeyboardGrid">
-        </Grid>
+            <Grid>
+                <Grid x:Name="KeyboardGrid" />
+                <Canvas x:Name="SwipeTrail"
+                        ClipToBounds="True"
+                        IsHitTestVisible="False">
+                    <Polyline x:Name="SwipeTrailLine"
+                              Stroke="#8DDCFF"
+                              StrokeThickness="5"
+                              StrokeStartLineCap="Round"
+                              StrokeEndLineCap="Round"
+                              StrokeLineJoin="Round"
+                              Opacity="0" />
+                </Canvas>
+            </Grid>
         </Border>
 
         <Grid x:Name="FooterBar" Grid.Row="2" Margin="0,7,0,0">
