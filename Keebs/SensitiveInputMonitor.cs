@@ -1,3 +1,5 @@
+using System.Threading;
+using System.Threading.Tasks;
 using System.Windows.Automation;
 
 namespace Keebs;
@@ -8,18 +10,28 @@ internal sealed class SensitiveInputMonitor : IDisposable
     [
         "password", "passcode", "pin", "cvv", "cvc", "security code", "secret",
         "otp", "one-time", "one time", "2fa", "mfa", "verification code",
-        "recovery code", "token", "ssn", "social security"
+        "recovery code", "ssn", "social security"
+    ];
+
+    private static readonly string[] SensitiveTokenPhrases =
+    [
+        "access token", "api token", "auth token", "bearer token", "personal access token",
+        "refresh token", "secret token"
     ];
 
     private readonly AutomationFocusChangedEventHandler _focusChangedHandler;
+    private int _updateInFlight;
+    private int _updateRequestId;
     private bool _started;
 
     public SensitiveInputMonitor()
     {
-        _focusChangedHandler = (_, _) => UpdateFromFocusedElement();
+        _focusChangedHandler = (_, _) => QueueUpdateFromFocusedElement();
     }
 
     public event EventHandler? StateChanged;
+
+    public event EventHandler? FocusChanged;
 
     public bool IsSensitive { get; private set; }
 
@@ -32,7 +44,7 @@ internal sealed class SensitiveInputMonitor : IDisposable
 
         _started = true;
         Automation.AddAutomationFocusChangedEventHandler(_focusChangedHandler);
-        UpdateFromFocusedElement();
+        QueueUpdateFromFocusedElement();
     }
 
     public void Dispose()
@@ -46,16 +58,42 @@ internal sealed class SensitiveInputMonitor : IDisposable
         _started = false;
     }
 
-    private void UpdateFromFocusedElement()
+    private void QueueUpdateFromFocusedElement()
     {
-        var sensitive = IsFocusedElementSensitive();
-        if (sensitive == IsSensitive)
+        var requestId = Interlocked.Increment(ref _updateRequestId);
+        if (Interlocked.CompareExchange(ref _updateInFlight, 1, 0) != 0)
         {
             return;
         }
 
-        IsSensitive = sensitive;
-        StateChanged?.Invoke(this, EventArgs.Empty);
+        _ = Task.Run(() => UpdateFromFocusedElement(requestId));
+    }
+
+    private void UpdateFromFocusedElement(int requestId)
+    {
+        try
+        {
+            var sensitive = IsFocusedElementSensitive();
+            if (!_started || requestId != Volatile.Read(ref _updateRequestId))
+            {
+                return;
+            }
+
+            var stateChanged = sensitive != IsSensitive;
+            IsSensitive = sensitive;
+            FocusChanged?.Invoke(this, EventArgs.Empty);
+
+            if (!stateChanged)
+            {
+                return;
+            }
+
+            StateChanged?.Invoke(this, EventArgs.Empty);
+        }
+        finally
+        {
+            Interlocked.Exchange(ref _updateInFlight, 0);
+        }
     }
 
     private static bool IsFocusedElementSensitive()
@@ -106,14 +144,37 @@ internal sealed class SensitiveInputMonitor : IDisposable
             return true;
         }
 
-        var metadata = string.Join(" ",
+        var userFacingMetadata = string.Join(" ",
             GetStringProperty(element, AutomationElement.NameProperty),
             GetStringProperty(element, AutomationElement.AutomationIdProperty),
-            GetStringProperty(element, AutomationElement.ClassNameProperty),
             GetStringProperty(element, AutomationElement.HelpTextProperty));
 
+        if (IsSensitiveMetadata(userFacingMetadata))
+        {
+            return true;
+        }
+
+        var className = GetStringProperty(element, AutomationElement.ClassNameProperty);
+        return LooksLikeNativeClassName(className) &&
+               SensitiveKeywords.Any(keyword => className.Contains(keyword, StringComparison.OrdinalIgnoreCase));
+    }
+
+    internal static bool IsSensitiveMetadata(string metadata)
+    {
         return SensitiveKeywords.Any(keyword =>
-            metadata.Contains(keyword, StringComparison.OrdinalIgnoreCase));
+                   metadata.Contains(keyword, StringComparison.OrdinalIgnoreCase)) ||
+               SensitiveTokenPhrases.Any(phrase =>
+                   metadata.Contains(phrase, StringComparison.OrdinalIgnoreCase));
+    }
+
+    internal static bool LooksLikeNativeClassName(string className)
+    {
+        return !string.IsNullOrWhiteSpace(className) &&
+               className.Length <= 64 &&
+               !className.Any(char.IsWhiteSpace) &&
+               !className.Contains('[', StringComparison.Ordinal) &&
+               !className.Contains(']', StringComparison.Ordinal) &&
+               !className.Contains(':', StringComparison.Ordinal);
     }
 
     private static bool GetBoolProperty(AutomationElement element, AutomationProperty property)

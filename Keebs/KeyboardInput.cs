@@ -34,11 +34,87 @@ internal static class KeyboardInput
 
     public static void SendVirtualKey(VirtualKey key)
     {
+        SendVirtualKey((ushort)key);
+    }
+
+    public static void SendVirtualKey(ushort key)
+    {
         Send(
         [
             CreateVirtualKeyInput(key, keyUp: false),
             CreateVirtualKeyInput(key, keyUp: true)
         ]);
+    }
+
+    public static void SendWithReleasedModifiers(Action sendAction)
+    {
+        var activeModifiers = new[]
+            {
+                VirtualKey.Control,
+                VirtualKey.Shift,
+                VirtualKey.Alt,
+                VirtualKey.LeftWindows,
+                VirtualKey.RightWindows
+            }
+            .Where(IsVirtualKeyDown)
+            .ToArray();
+
+        try
+        {
+            foreach (var modifier in activeModifiers)
+            {
+                SendVirtualKeyUp(modifier);
+            }
+
+            sendAction();
+        }
+        finally
+        {
+            for (var index = activeModifiers.Length - 1; index >= 0; index--)
+            {
+                SendVirtualKeyDown(activeModifiers[index]);
+            }
+        }
+    }
+
+    internal static bool IsVirtualKeyDown(VirtualKey key)
+    {
+        return (GetKeyState((int)key) & 0x8000) != 0;
+    }
+
+    private static void SendVirtualKeyDown(VirtualKey key)
+    {
+        Send([CreateVirtualKeyInput(key, keyUp: false)]);
+    }
+
+    private static void SendVirtualKeyUp(VirtualKey key)
+    {
+        Send([CreateVirtualKeyInput(key, keyUp: true)]);
+    }
+
+    public static void SendVirtualKeyChord(IReadOnlyList<VirtualKey> modifiers, VirtualKey key)
+    {
+        SendVirtualKeyChord(modifiers.Select(modifier => (ushort)modifier).ToArray(), (ushort)key);
+    }
+
+    public static void SendVirtualKeyChord(IReadOnlyList<ushort> modifiers, ushort key)
+    {
+        var inputs = new List<Input>((modifiers.Count * 2) + 2);
+
+        foreach (var modifier in modifiers)
+        {
+            inputs.Add(CreateVirtualKeyInput(modifier, keyUp: false));
+        }
+
+        inputs.Add(CreateVirtualKeyInput(key, keyUp: false));
+        inputs.Add(CreateVirtualKeyInput(key, keyUp: true));
+
+        for (var index = modifiers.Count - 1; index >= 0; index--)
+        {
+            inputs.Add(CreateVirtualKeyInput(modifiers[index], keyUp: true));
+        }
+
+        Send(inputs);
     }
 
     private static Input CreateUnicodeInput(char character, bool keyUp)
@@ -60,6 +136,11 @@ internal static class KeyboardInput
 
     private static Input CreateVirtualKeyInput(VirtualKey key, bool keyUp)
     {
+        return CreateVirtualKeyInput((ushort)key, keyUp);
+    }
+
+    private static Input CreateVirtualKeyInput(ushort key, bool keyUp)
+    {
         return new Input
         {
             Type = InputKeyboard,
@@ -67,7 +148,7 @@ internal static class KeyboardInput
             {
                 Keyboard = new KeyboardInputData
                 {
-                    VirtualKey = (ushort)key,
+                    VirtualKey = key,
                     Flags = keyUp ? KeyEventFKeyUp : 0
                 }
             }
@@ -91,6 +172,9 @@ internal static class KeyboardInput
 
     [DllImport("user32.dll", SetLastError = true)]
     private static extern uint SendInput(uint inputCount, Input[] inputs, int inputSize);
+
+    [DllImport("user32.dll")]
+    private static extern short GetKeyState(int virtualKey);
 
     [StructLayout(LayoutKind.Sequential)]
     private struct Input

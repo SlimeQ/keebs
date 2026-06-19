@@ -6,24 +6,77 @@ internal sealed class TextSession
 {
     private readonly StringBuilder _currentWord = new();
     private readonly Queue<string> _previousWords = new();
+    private int _boundaryCharactersAfterPreviousWord;
 
     public PredictionContext Context => new(
         _currentWord.ToString(),
         _previousWords.ToArray());
 
-    public void TypeText(string text)
+    public void SeedFromTextBeforeCaret(string textBeforeCaret)
     {
+        _currentWord.Clear();
+        _previousWords.Clear();
+        _boundaryCharactersAfterPreviousWord = 0;
+
+        var words = new List<string>();
+        var word = new StringBuilder();
+
+        foreach (var character in textBeforeCaret)
+        {
+            var normalizedCharacter = character == '’' ? '\'' : char.ToLowerInvariant(character);
+            if (char.IsLetter(normalizedCharacter) || normalizedCharacter == '\'')
+            {
+                word.Append(normalizedCharacter);
+                _boundaryCharactersAfterPreviousWord = 0;
+                continue;
+            }
+
+            AddParsedWord(words, word);
+            if (words.Count > 0)
+            {
+                _boundaryCharactersAfterPreviousWord++;
+            }
+        }
+
+        var caretIsInWord = word.Length > 0;
+        if (caretIsInWord)
+        {
+            _currentWord.Append(word.ToString());
+            _boundaryCharactersAfterPreviousWord = 0;
+        }
+
+        foreach (var previousWord in words.TakeLast(4))
+        {
+            _previousWords.Enqueue(previousWord);
+        }
+    }
+
+    public IReadOnlyList<TextCommit> TypeText(string text)
+    {
+        var commits = new List<TextCommit>();
+
         foreach (var character in text)
         {
-            if (char.IsLetter(character) || character == '\'')
+            var normalizedCharacter = character == '’' ? '\'' : char.ToLowerInvariant(character);
+            if (char.IsLetter(normalizedCharacter) || normalizedCharacter == '\'')
             {
-                _currentWord.Append(char.ToLowerInvariant(character));
+                _currentWord.Append(normalizedCharacter);
+                _boundaryCharactersAfterPreviousWord = 0;
             }
             else
             {
-                CommitBoundary();
+                if (CommitBoundary() is { } commit)
+                {
+                    commits.Add(commit);
+                }
+                else if (_previousWords.Count > 0)
+                {
+                    _boundaryCharactersAfterPreviousWord++;
+                }
             }
         }
+
+        return commits;
     }
 
     public void Backspace()
@@ -31,23 +84,78 @@ internal sealed class TextSession
         if (_currentWord.Length > 0)
         {
             _currentWord.Remove(_currentWord.Length - 1, 1);
+            return;
         }
-    }
 
-    public void CommitBoundary()
-    {
-        if (_currentWord.Length == 0)
+        if (_boundaryCharactersAfterPreviousWord > 1)
+        {
+            _boundaryCharactersAfterPreviousWord--;
+            return;
+        }
+
+        if (_previousWords.Count == 0)
         {
             return;
         }
 
-        _previousWords.Enqueue(_currentWord.ToString());
+        var previousWords = _previousWords.ToList();
+        var wordToRestore = previousWords[^1];
+        previousWords.RemoveAt(previousWords.Count - 1);
+
+        _previousWords.Clear();
+        foreach (var previousWord in previousWords)
+        {
+            _previousWords.Enqueue(previousWord);
+        }
+
+        _currentWord.Append(wordToRestore);
+        _boundaryCharactersAfterPreviousWord = 0;
+    }
+
+    public void BackspaceWord()
+    {
+        if (_currentWord.Length > 0)
+        {
+            _currentWord.Clear();
+            return;
+        }
+
+        if (_previousWords.Count == 0)
+        {
+            _boundaryCharactersAfterPreviousWord = 0;
+            return;
+        }
+
+        var previousWords = _previousWords.ToList();
+        previousWords.RemoveAt(previousWords.Count - 1);
+
+        _previousWords.Clear();
+        foreach (var previousWord in previousWords)
+        {
+            _previousWords.Enqueue(previousWord);
+        }
+
+        _boundaryCharactersAfterPreviousWord = previousWords.Count > 0 ? 1 : 0;
+    }
+
+    public TextCommit? CommitBoundary()
+    {
+        if (_currentWord.Length == 0)
+        {
+            return null;
+        }
+
+        var word = _currentWord.ToString();
+        var previousWord = _previousWords.Count == 0 ? string.Empty : _previousWords.Last();
+        _previousWords.Enqueue(word);
+        _boundaryCharactersAfterPreviousWord = 1;
         while (_previousWords.Count > 4)
         {
             _previousWords.Dequeue();
         }
 
         _currentWord.Clear();
+        return new TextCommit(word, previousWord);
     }
 
     public SuggestionReplacement AcceptSuggestion(string suggestion)
@@ -64,5 +172,21 @@ internal sealed class TextSession
     public void ResetPredictionContext()
     {
         _currentWord.Clear();
+        _previousWords.Clear();
+        _boundaryCharactersAfterPreviousWord = 0;
     }
+
+    private static void AddParsedWord(List<string> words, StringBuilder word)
+    {
+        if (word.Length == 0)
+        {
+            return;
+        }
+
+        words.Add(word.ToString());
+        word.Clear();
+    }
+
 }
+
+internal sealed record TextCommit(string Word, string PreviousWord);

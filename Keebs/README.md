@@ -57,11 +57,24 @@ python .\tools\postprocess_icon.py `
 - Floating, topmost WPF keyboard window.
 - Uses `SendInput` so key taps go to the currently focused app.
 - Marks the keyboard window as no-activate so clicking keys should not steal focus.
-- Shows three local suggestions from a small built-in predictor.
-- Learns accepted suggestions in memory for the current session.
+- Updates predictions from physical key-down events so hardware keyboard typing
+  works even when an app does not expose focused text through UI Automation.
+  UI Automation is used for focus/caret seeding where available, but physical
+  typing keeps its local prediction session so bad accessibility text cannot
+  overwrite active suggestions. Keebs still ignores its own injected key events.
+- Shows four local suggestions from a local predictor seeded with common words,
+  contractions, and a bundled starter corpus.
+- Learns typed words and accepted suggestions into a local profile.
 - Suppresses predictions and learning in sensitive fields detected via UI Automation
   password metadata or keywords such as password, PIN, CVV, OTP, and recovery code.
-- Private mode disables predictions and learning manually.
+- The prediction switch disables predictions and learning manually.
+- Press `Ctrl+Space` while typing on a physical keyboard to accept the first
+  visible prediction. Keebs handles the chord before Windows sees it, so repeated
+  `Ctrl+Space` does not invoke the system clipboard/share shortcut.
+- Existing prediction profiles are versioned and migrated on first launch after
+  upgrade while preserving learned local frequencies.
+- Known browser accessibility artifacts such as Firefox's stray `xhtml` context
+  are rejected and removed from migrated prediction profiles.
 
 ## Known limits
 

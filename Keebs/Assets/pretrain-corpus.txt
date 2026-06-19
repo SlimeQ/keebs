@@ -1,0 +1,113 @@
+I don't know if that will work, but I think we can make it better.
+I don't think this is quite right yet.
+I don't want the prediction to disappear when I start typing.
+I can't tell if the layout is too small or if the buttons are clipping.
+I can't reproduce that issue on my machine yet.
+I couldn't get the installer to run until the old app was closed.
+I didn't mean to turn learning off.
+I haven't tested this in every text box.
+I'm typing into a normal field and the suggestions should stay visible.
+I'm not sure why that input was marked sensitive.
+I'm going to try the smaller layout again.
+I'm seeing the correct suggestion after the first word.
+I'm using the keyboard because the focused app should keep focus.
+I'll check the minimum size before we ship it.
+I'll keep predictions on and turn learning off.
+I've noticed that backspace should clean up the current word.
+I've been testing the prediction engine with real typing.
+You're right that the toggle belongs near the other controls.
+You're probably seeing the old model until it migrates.
+You're going to want the fourth suggestion when the prefix is broad.
+You'll get better completions after the profile has learned a little.
+You've already typed enough context for the next word.
+We're keeping the model local and small.
+We're not sending typed text anywhere.
+We're using the current word and the previous word for ranking.
+We'll migrate the existing profile the next time the app starts.
+We've seeded common words, contractions, and next word pairs.
+They don't need to install a separate language pack.
+They can't rely on the installer to read every user's local profile.
+They'll still get predictions when learning is paused.
+They've got a model that can improve over time.
+There's a focused text box with existing text before the caret.
+There's no reason to hide the prediction strip at minimum size.
+That's a good default for most users.
+That's not a password field, so predictions should be allowed.
+That's why the status belongs in the footer.
+What's the next word after this phrase?
+What's happening when the caret moves inside existing text?
+Where's the typed context coming from?
+Who's responsible for saving the profile?
+Let's keep the interface compact and readable.
+Let's make the keyboard feel like a real graphical skin.
+Let's add common contractions to the seed dictionary.
+Let's pretrain the next word model with common English phrases.
+It doesn't have to be huge to improve first-run behavior.
+It isn't a cloud model and it shouldn't need a server.
+It won't overwrite words the user has already learned.
+It'll use the bundled corpus as a baseline.
+It'd be better if personal choices outranked the seed corpus.
+He doesn't need to restart the target app.
+She doesn't want raw key input unless predictions are disabled.
+We should keep the prediction toggle separate from the learning toggle.
+We should show useful starters when there is no context.
+We should prefer learned pairs over generic pairs.
+We should preserve the user's existing frequency data.
+We should write the migrated profile back with the new version.
+We can use a bundled corpus for first-run ranking.
+We can add more sentences later without changing the profile format.
+We can complete words from the broad English dictionary.
+We can rank corpus words below accepted suggestions.
+We can keep sensitive field suppression above every other setting.
+The keyboard layout should match a standard American TKL board.
+The footer should hold prediction, learning, and status controls.
+The header should be reserved for suggestion buttons.
+The model should suggest the next likely word after a boundary.
+The model should complete the current word after a partial prefix.
+The model should remember accepted suggestions more strongly.
+The model should migrate old profiles without deleting local data.
+The app should start with predictions enabled.
+The app should start with learning enabled unless the user changes it.
+The app should avoid stealing focus from the target window.
+The app should handle text that already exists in a field.
+The app should handle backspace cleanly after a typo.
+The app should keep working when resized to the minimum size.
+The installer should upgrade the executable while the profile stays in local app data.
+The profile contains word frequencies and next word frequencies.
+The profile version tells the app which migrations have already run.
+The corpus gives the engine a useful baseline before personal training.
+A common phrase should beat an obscure dictionary word.
+A learned phrase should beat a common phrase.
+A sensitive field should pause predictions and learning.
+A disabled prediction switch should pause predictions and learning.
+A disabled learning switch should keep predictions running.
+A broad prefix should still return four ranked suggestions.
+Common contractions include don't, can't, won't, isn't, you're, we're, they're, and I'm.
+Common next words include I think, I don't, we should, we can, and that's why.
+Typing a space commits the current word.
+Typing punctuation commits the current word.
+Clicking a suggestion commits the replacement word.
+Backspace restores the current word when it removes a boundary.
+Focus changes should resync the current text context.
+Existing text before the caret should seed the session.
+Local predictions should work in normal edit fields.
+Learning should save only when there is new typed text.
+Accepted suggestions should save stronger preference signals.
+Personal data should stay ahead of bundled training data.
+Bundled training data should make first-run suggestions less empty.
+Dictionary fallbacks should fill empty suggestion slots.
+Contractions should keep their apostrophes.
+The word I'm should display with a capital I.
+The word I'll should display with a capital I.
+The word I've should display with a capital I.
+The word I'd should display with a capital I.
+The phrase don't know is very common.
+The phrase can't tell is very common.
+The phrase we're going is very common.
+The phrase you're right is very common.
+The phrase that's why is very common.
+The phrase let's keep is very common.
+The phrase we should is very common.
+The phrase I think is very common.
+The phrase I don't is very common.
+The phrase it should is very common.

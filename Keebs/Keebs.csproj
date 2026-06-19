@@ -11,11 +11,14 @@
     <Product>Keebs</Product>
     <Description>Windows on-screen keyboard with local predictions</Description>
     <Company>Keebs</Company>
-    <Version>0.1.0</Version>
+    <Version>0.1.20</Version>
   </PropertyGroup>
 
   <ItemGroup>
     <Resource Include="Assets\keebs.ico" />
+    <EmbeddedResource Include="Assets\english-common-words.txt" />
+    <EmbeddedResource Include="Assets\english-dictionary-words.txt" />
+    <EmbeddedResource Include="Assets\pretrain-corpus.txt" />
   </ItemGroup>
 
 </Project>
