@@ -1,5 +1,7 @@
+using System.ComponentModel;
 using System.Diagnostics;
 using System.Runtime.InteropServices;
+using System.Threading;
 
 namespace Keebs;
 
@@ -10,10 +12,16 @@ internal sealed class PhysicalKeyboardMonitor : IDisposable
     private const int WmKeyUp = 0x0101;
     private const int WmSysKeyDown = 0x0104;
     private const int WmSysKeyUp = 0x0105;
+    private const int WmQuit = 0x0012;
     private const uint LlkhfInjected = 0x00000010;
     private readonly LowLevelKeyboardProc _hookCallback;
+    private readonly object _lifecycleLock = new();
     private bool _acceptPredictionChordActive;
+    private ManualResetEventSlim? _hookReady;
     private IntPtr _hookHandle;
+    private Exception? _hookStartupException;
+    private Thread? _hookThread;
+    private uint _hookThreadId;
 
     public PhysicalKeyboardMonitor()
     {
@@ -24,26 +32,116 @@ internal sealed class PhysicalKeyboardMonitor : IDisposable
 
     public void Start()
     {
-        if (_hookHandle != IntPtr.Zero)
+        ManualResetEventSlim hookReady;
+
+        lock (_lifecycleLock)
         {
-            return;
+            if (_hookThread is not null)
+            {
+                return;
+            }
+
+            _hookStartupException = null;
+            hookReady = new ManualResetEventSlim();
+            _hookReady = hookReady;
+            _hookThread = new Thread(RunHookMessageLoop)
+            {
+                IsBackground = true,
+                Name = "Keebs keyboard hook",
+                Priority = ThreadPriority.AboveNormal
+            };
+            _hookThread.Start();
         }
 
-        using var process = Process.GetCurrentProcess();
-        using var module = process.MainModule;
-        var moduleHandle = module is null ? IntPtr.Zero : GetModuleHandle(module.ModuleName);
-        _hookHandle = SetWindowsHookEx(WhKeyboardLowLevel, _hookCallback, moduleHandle, 0);
+        hookReady.Wait();
+
+        if (_hookStartupException is { } startupException)
+        {
+            Dispose();
+            throw new InvalidOperationException("Could not start the physical keyboard monitor.", startupException);
+        }
     }
 
     public void Dispose()
     {
-        if (_hookHandle == IntPtr.Zero)
+        ManualResetEventSlim? hookReady;
+        Thread? hookThread;
+
+        lock (_lifecycleLock)
+        {
+            hookReady = _hookReady;
+            hookThread = _hookThread;
+        }
+
+        if (hookThread is null)
         {
             return;
         }
 
-        UnhookWindowsHookEx(_hookHandle);
-        _hookHandle = IntPtr.Zero;
+        hookReady?.Wait();
+        var hookThreadId = _hookThreadId;
+        if (hookThreadId != 0)
+        {
+            PostThreadMessage(hookThreadId, WmQuit, IntPtr.Zero, IntPtr.Zero);
+        }
+
+        if (hookThread != Thread.CurrentThread)
+        {
+            hookThread.Join();
+        }
+
+        lock (_lifecycleLock)
+        {
+            if (!ReferenceEquals(_hookThread, hookThread))
+            {
+                return;
+            }
+
+            _hookThread = null;
+            _hookReady?.Dispose();
+            _hookReady = null;
+        }
+    }
+
+    private void RunHookMessageLoop()
+    {
+        try
+        {
+            // Creating the queue before signaling readiness guarantees that Dispose can
+            // reliably post WM_QUIT, even when the window closes immediately after startup.
+            PeekMessage(out _, IntPtr.Zero, 0, 0, 0);
+            _hookThreadId = GetCurrentThreadId();
+
+            using var process = Process.GetCurrentProcess();
+            using var module = process.MainModule;
+            var moduleHandle = module is null ? IntPtr.Zero : GetModuleHandle(module.ModuleName);
+            _hookHandle = SetWindowsHookEx(WhKeyboardLowLevel, _hookCallback, moduleHandle, 0);
+            if (_hookHandle == IntPtr.Zero)
+            {
+                throw new Win32Exception(Marshal.GetLastWin32Error());
+            }
+
+            _hookReady?.Set();
+
+            while (GetMessage(out _, IntPtr.Zero, 0, 0) > 0)
+            {
+            }
+        }
+        catch (Exception ex)
+        {
+            _hookStartupException = ex;
+            _hookReady?.Set();
+        }
+        finally
+        {
+            if (_hookHandle != IntPtr.Zero)
+            {
+                UnhookWindowsHookEx(_hookHandle);
+                _hookHandle = IntPtr.Zero;
+            }
+
+            _hookThreadId = 0;
+        }
     }
 
     internal static bool IsInjected(uint flags)
@@ -174,7 +272,16 @@ internal sealed class PhysicalKeyboardMonitor : IDisposable
                     control,
                     alt,
                     windows);
-                TextInputKeyPressed?.Invoke(this, args);
+                try
+                {
+                    TextInputKeyPressed?.Invoke(this, args);
+                }
+                catch (Exception)
+                {
+                    // Never allow subscriber failures to escape into Windows' global input path.
+                    return CallNextHookEx(_hookHandle, code, wParam, lParam);
+                }
+
                 if (args.Handled)
                 {
                     _acceptPredictionChordActive = acceptPredictionChord;
@@ -211,8 +318,25 @@ internal sealed class PhysicalKeyboardMonitor : IDisposable
     [DllImport("user32.dll")]
     private static extern IntPtr CallNextHookEx(IntPtr hookHandle, int code, IntPtr wParam, IntPtr lParam);
 
+    [DllImport("user32.dll", SetLastError = true)]
+    private static extern int GetMessage(out NativeMessage message, IntPtr windowHandle, uint minimumMessage, uint maximumMessage);
+
+    [DllImport("user32.dll")]
+    private static extern bool PeekMessage(
+        out NativeMessage message,
+        IntPtr windowHandle,
+        uint minimumMessage,
+        uint maximumMessage,
+        uint removeMessage);
+
+    [DllImport("user32.dll", SetLastError = true)]
+    private static extern bool PostThreadMessage(uint threadId, int message, IntPtr wParam, IntPtr lParam);
+
     [DllImport("kernel32.dll", CharSet = CharSet.Auto, SetLastError = true)]
     private static extern IntPtr GetModuleHandle(string? moduleName);
+
+    [DllImport("kernel32.dll")]
+    private static extern uint GetCurrentThreadId();
 
     [DllImport("user32.dll")]
     private static extern short GetKeyState(int virtualKey);
@@ -225,6 +349,19 @@ internal sealed class PhysicalKeyboardMonitor : IDisposable
         public uint Flags;
         public uint Time;
         public UIntPtr ExtraInfo;
+    }
+
+    [StructLayout(LayoutKind.Sequential)]
+    private struct NativeMessage
+    {
+        public IntPtr WindowHandle;
+        public uint Message;
+        public UIntPtr WParam;
+        public IntPtr LParam;
+        public uint Time;
+        public int PointX;
+        public int PointY;
+        public uint Private;
     }
 }
 

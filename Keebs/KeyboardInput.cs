@@ -8,6 +8,7 @@ internal static class KeyboardInput
     private const uint KeyEventFKeyUp = 0x0002;
     private const uint KeyEventFUnicode = 0x0004;
     internal static Action<string>? SendTextOverride { get; set; }
+    internal static Action<IReadOnlyList<VirtualKey>, VirtualKey>? SendVirtualKeyChordOverride { get; set; }
 
     internal static int NativeInputSize => Marshal.SizeOf<Input>();
 
@@ -101,6 +102,12 @@ internal static class KeyboardInput
 
     public static void SendVirtualKeyChord(IReadOnlyList<VirtualKey> modifiers, VirtualKey key)
     {
+        if (SendVirtualKeyChordOverride is { } sendVirtualKeyChord)
+        {
+            sendVirtualKeyChord(modifiers, key);
+            return;
+        }
+
         SendVirtualKeyChord(modifiers.Select(modifier => (ushort)modifier).ToArray(), (ushort)key);
     }
 

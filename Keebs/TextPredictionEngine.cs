@@ -6,7 +6,7 @@ namespace Keebs;
 
 internal sealed class TextPredictionEngine
 {
-    private const int CurrentProfileVersion = 5;
+    private const int CurrentProfileVersion = 6;
     private const int MaxLearnedWords = 5000;
     private const int MaxSuggestions = 4;
     private const int MaxNextWordsPerPrefix = 40;
@@ -996,7 +996,7 @@ internal sealed class TextPredictionEngine
 
     private static bool IsRejectedPredictionWord(string word)
     {
-        return word.Equals("xhtml", StringComparison.OrdinalIgnoreCase) ||
+        return word.StartsWith("xhtml", StringComparison.OrdinalIgnoreCase) ||
                word.Equals("iuds", StringComparison.OrdinalIgnoreCase) ||
                word.Equals("ires", StringComparison.OrdinalIgnoreCase) ||
                word.Equals("nk", StringComparison.OrdinalIgnoreCase) ||

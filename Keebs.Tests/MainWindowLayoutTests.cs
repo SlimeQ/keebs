@@ -16,13 +16,157 @@ public sealed class MainWindowLayoutTests
 
                 Assert.Equal(600, window.MinWidth);
                 Assert.Equal(245, window.MinHeight);
+                Assert.Equal(window.MinWidth, window.Width);
+                Assert.Equal(window.MinHeight, window.Height);
                 Assert.Equal(System.Windows.ResizeMode.CanResize, window.ResizeMode);
                 Assert.Equal(System.Windows.WindowStyle.SingleBorderWindow, window.WindowStyle);
                 Assert.True(window.PredictionToggle.IsChecked);
                 Assert.True(window.LearningToggle.IsChecked);
                 Assert.Equal("Test", window.TypingTestButton.Content);
+                Assert.Equal(5, System.Windows.Controls.Grid.GetColumn(window.UpdateButton));
+                Assert.Equal(TimeSpan.FromHours(1), MainWindow.AutomaticUpdateCheckInterval);
 
                 window.Close();
+            }
+            catch (Exception ex)
+            {
+                threadException = ex;
+            }
+        });
+
+        thread.SetApartmentState(ApartmentState.STA);
+        thread.Start();
+        thread.Join();
+
+        if (threadException is not null)
+        {
+            throw threadException;
+        }
+    }
+
+    [Fact]
+    public void UpdateIndicatorReflectsReleaseAvailability()
+    {
+        Exception? threadException = null;
+        var thread = new Thread(() =>
+        {
+            try
+            {
+                var window = new MainWindow(new TextPredictionEngine(GetProfilePath()), startFocusMonitors: false);
+                var currentVersion = new Version(1, 2, 3);
+                var latestVersion = new Version(1, 2, 4);
+
+                window.ApplyUpdateAvailability(new UpdateCheckResult(
+                    true,
+                    currentVersion,
+                    latestVersion,
+                    "https://example.test/keebs.msi",
+                    "https://example.test/release",
+                    "Update available"));
+
+                Assert.Equal(System.Windows.Visibility.Visible, window.UpdateAvailableIndicator.Visibility);
+                Assert.Contains(latestVersion.ToString(), Assert.IsType<string>(window.UpdateButton.ToolTip));
+
+                window.ApplyUpdateAvailability(new UpdateCheckResult(
+                    false,
+                    latestVersion,
+                    latestVersion,
+                    null,
+                    null,
+                    "Up to date"));
+
+                Assert.Equal(System.Windows.Visibility.Collapsed, window.UpdateAvailableIndicator.Visibility);
+                window.Close();
+            }
+            catch (Exception ex)
+            {
+                threadException = ex;
+            }
+        });
+
+        thread.SetApartmentState(ApartmentState.STA);
+        thread.Start();
+        thread.Join();
+
+        if (threadException is not null)
+        {
+            throw threadException;
+        }
+    }
+
+    [Fact]
+    public void ChassisDragExcludesInteractiveControls()
+    {
+        Exception? threadException = null;
+        var thread = new Thread(() =>
+        {
+            try
+            {
+                var window = new MainWindow(new TextPredictionEngine(GetProfilePath()), startFocusMonitors: false);
+
+                Assert.False(MainWindow.IsInteractiveElement(window.Chassis));
+                Assert.True(MainWindow.IsInteractiveElement(FindKeyButton(window, "A")));
+                Assert.True(MainWindow.IsInteractiveElement(window.UpdateButton));
+
+                window.Close();
+            }
+            catch (Exception ex)
+            {
+                threadException = ex;
+            }
+        });
+
+        thread.SetApartmentState(ApartmentState.STA);
+        thread.Start();
+        thread.Join();
+
+        if (threadException is not null)
+        {
+            throw threadException;
+        }
+    }
+
+    [Fact]
+    public void RightAndMiddleButtonsMapToControlAndAltChords()
+    {
+        Assert.Equal(VirtualKey.Control, MainWindow.GetPointerChordModifier(System.Windows.Input.MouseButton.Right));
+        Assert.Equal(VirtualKey.Alt, MainWindow.GetPointerChordModifier(System.Windows.Input.MouseButton.Middle));
+        Assert.Null(MainWindow.GetPointerChordModifier(System.Windows.Input.MouseButton.Left));
+    }
+
+    [Fact]
+    public void PointerModifiedKeyPressSendsChordWithoutTypingPredictionText()
+    {
+        Exception? threadException = null;
+        var thread = new Thread(() =>
+        {
+            try
+            {
+                var window = new MainWindow(new TextPredictionEngine(GetProfilePath()), startFocusMonitors: false);
+                var keyButton = FindKeyButton(window, "A");
+                IReadOnlyList<VirtualKey>? sentModifiers = null;
+                VirtualKey? sentKey = null;
+                KeyboardInput.SendVirtualKeyChordOverride = (modifiers, key) =>
+                {
+                    sentModifiers = modifiers.ToArray();
+                    sentKey = key;
+                };
+
+                try
+                {
+                    typeof(MainWindow)
+                        .GetMethod("PressKeyWithPointerModifier", System.Reflection.BindingFlags.Instance | System.Reflection.BindingFlags.NonPublic)!
+                        .Invoke(window, [keyButton.Tag, VirtualKey.Control]);
+
+                    Assert.Equal([VirtualKey.Control], sentModifiers);
+                    Assert.Equal(VirtualKey.A, sentKey);
+                    Assert.Equal(string.Empty, GetPredictionContext(window).CurrentWord);
+                }
+                finally
+                {
+                    KeyboardInput.SendVirtualKeyChordOverride = null;
+                    window.Close();
+                }
             }
             catch (Exception ex)
             {
@@ -48,7 +192,7 @@ public sealed class MainWindowLayoutTests
         {
             try
             {
-                var window = new MainWindow
+                var window = new MainWindow(new TextPredictionEngine(GetProfilePath()), startFocusMonitors: false)
                 {
                     Width = 600,
                     Height = 245
@@ -140,7 +284,7 @@ public sealed class MainWindowLayoutTests
         {
             try
             {
-                var window = new MainWindow
+                var window = new MainWindow(new TextPredictionEngine(GetProfilePath()), startFocusMonitors: false)
                 {
                     Width = 600,
                     Height = 245
@@ -194,14 +338,15 @@ public sealed class MainWindowLayoutTests
         {
             try
             {
-                var window = new MainWindow
+                var window = new MainWindow(new TextPredictionEngine(GetProfilePath()), startFocusMonitors: false)
                 {
-                    Width = 580,
-                    Height = 198
+                    Width = 600,
+                    Height = 245
                 };
 
                 window.Show();
                 window.UpdateLayout();
+                PressPhysicalText(window, "show");
                 window.Dispatcher.Invoke(
                     () => { },
                     System.Windows.Threading.DispatcherPriority.Loaded);
@@ -220,9 +365,132 @@ public sealed class MainWindowLayoutTests
 
                 Assert.Equal(System.Windows.Visibility.Visible, window.HeaderBar.Visibility);
                 Assert.Equal(System.Windows.Visibility.Visible, window.FooterBar.Visibility);
+                Assert.NotEmpty(GetDisplayedSuggestions(window));
                 Assert.True(space.ActualHeight > 0);
                 Assert.True(spaceBottom <= footerTop, $"space bottom {spaceBottom:0.0} exceeded footer top {footerTop:0.0}");
                 Assert.True(deckBottom <= footerTop, $"deck bottom {deckBottom:0.0} exceeded footer top {footerTop:0.0}");
+
+                window.Close();
+            }
+            catch (Exception ex)
+            {
+                threadException = ex;
+            }
+        });
+
+        thread.SetApartmentState(ApartmentState.STA);
+        thread.Start();
+        thread.Join();
+
+        if (threadException is not null)
+        {
+            throw threadException;
+        }
+    }
+
+    [Fact]
+    public void CompactNavigationLabelsFitInsideTheirKeys()
+    {
+        Exception? threadException = null;
+        var thread = new Thread(() =>
+        {
+            try
+            {
+                var window = new MainWindow(new TextPredictionEngine(GetProfilePath()), startFocusMonitors: false)
+                {
+                    Width = 600,
+                    Height = 245
+                };
+
+                window.Show();
+                window.UpdateLayout();
+                window.Dispatcher.Invoke(
+                    () => { },
+                    System.Windows.Threading.DispatcherPriority.Loaded);
+                window.UpdateLayout();
+
+                string[] compactKeyIds =
+                [
+                    "PrintScreen", "ScrollLock", "Pause",
+                    "Insert", "Home", "PageUp",
+                    "Delete", "End", "PageDown"
+                ];
+
+                foreach (var keyId in compactKeyIds)
+                {
+                    var button = FindKeyButton(window, keyId);
+                    var label = new System.Windows.Controls.TextBlock
+                    {
+                        Text = Assert.IsType<string>(button.Content),
+                        FontFamily = button.FontFamily,
+                        FontSize = button.FontSize,
+                        FontStyle = button.FontStyle,
+                        FontWeight = button.FontWeight,
+                        FontStretch = button.FontStretch
+                    };
+                    label.Measure(new System.Windows.Size(double.PositiveInfinity, double.PositiveInfinity));
+
+                    var availableWidth = button.ActualWidth - button.Padding.Left - button.Padding.Right - 4;
+                    Assert.True(
+                        label.DesiredSize.Width <= availableWidth,
+                        $"{keyId} label width {label.DesiredSize.Width:0.0} exceeded {availableWidth:0.0}");
+                }
+
+                window.Close();
+            }
+            catch (Exception ex)
+            {
+                threadException = ex;
+            }
+        });
+
+        thread.SetApartmentState(ApartmentState.STA);
+        thread.Start();
+        thread.Join();
+
+        if (threadException is not null)
+        {
+            throw threadException;
+        }
+    }
+
+    [Fact]
+    public void CompactIconLabelsStaySmallerThanTextLegends()
+    {
+        Exception? threadException = null;
+        var thread = new Thread(() =>
+        {
+            try
+            {
+                var window = new MainWindow(new TextPredictionEngine(GetProfilePath()), startFocusMonitors: false)
+                {
+                    Width = 600,
+                    Height = 245
+                };
+
+                window.Show();
+                window.UpdateLayout();
+                window.Dispatcher.Invoke(
+                    () => { },
+                    System.Windows.Threading.DispatcherPriority.Loaded);
+                window.UpdateLayout();
+
+                string[] iconKeyIds =
+                [
+                    "Backspace", "Tab", "CapsLock", "ShiftLeft", "ShiftRight", "Enter",
+                    "WinLeft", "WinRight", "Menu", "Left", "Up", "Down", "Right"
+                ];
+
+                foreach (var keyId in iconKeyIds)
+                {
+                    var button = FindKeyButton(window, keyId);
+                    Assert.True(
+                        button.FontSize < window.KeyFontSize,
+                        $"{keyId} icon size {button.FontSize:0.0} should be below text size {window.KeyFontSize:0.0}");
+                    Assert.True(
+                        button.FontSize <= button.ActualHeight * 0.7,
+                        $"{keyId} icon size {button.FontSize:0.0} was too large for key height {button.ActualHeight:0.0}");
+                }
 
                 window.Close();
             }
@@ -423,6 +691,58 @@ public sealed class MainWindowLayoutTests
 
                 Assert.Equal(string.Empty, GetPredictionContext(window).CurrentWord);
                 Assert.Equal("hello", GetPredictionContext(window).PreviousWord);
+
+                window.Close();
+            }
+            catch (Exception ex)
+            {
+                threadException = ex;
+            }
+        });
+
+        thread.SetApartmentState(ApartmentState.STA);
+        thread.Start();
+        thread.Join();
+
+        if (threadException is not null)
+        {
+            throw threadException;
+        }
+    }
+
+    [Fact]
+    public void PhysicalTextKeysAreIgnoredWhenFocusedElementIsNotTextInput()
+    {
+        Exception? threadException = null;
+        var thread = new Thread(() =>
+        {
+            try
+            {
+                var window = new MainWindow(new TextPredictionEngine(GetProfilePath()));
+
+                typeof(MainWindow)
+                    .GetField("_focusedTextInputActive", System.Reflection.BindingFlags.Instance | System.Reflection.BindingFlags.NonPublic)!
+                    .SetValue(window, false);
+
+                var shouldProcess = typeof(MainWindow)
+                    .GetMethod("ShouldProcessPhysicalKeyboardEvent", System.Reflection.BindingFlags.Instance | System.Reflection.BindingFlags.NonPublic)!;
+
+                var movementKey = new PhysicalKeyPressedEventArgs(
+                    (uint)VirtualKey.W,
+                    "w",
+                    isAcceptFirstPredictionChord: false);
+                var submittedSensitivePrompt = new PhysicalKeyPressedEventArgs(
+                    (uint)VirtualKey.Enter,
+                    string.Empty,
+                    isAcceptFirstPredictionChord: false);
+
+                Assert.False((bool)shouldProcess.Invoke(window, [movementKey])!);
+
+                typeof(MainWindow)
+                    .GetField("_focusedTextContextSensitive", System.Reflection.BindingFlags.Instance | System.Reflection.BindingFlags.NonPublic)!
+                    .SetValue(window, true);
+
+                Assert.True((bool)shouldProcess.Invoke(window, [submittedSensitivePrompt])!);
 
                 window.Close();
             }

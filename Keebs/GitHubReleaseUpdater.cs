@@ -1,5 +1,6 @@
 using System.Diagnostics;
 using System.IO;
+using System.Net;
 using System.Net.Http;
 using System.Reflection;
 using System.Text.Json;
@@ -12,6 +13,9 @@ internal sealed class GitHubReleaseUpdater
     private const string LatestReleaseUrl = "https://api.github.com/repos/SlimeQ/keebs/releases/latest";
     private const string UserAgent = "Keebs-Updater";
     private readonly HttpClient _httpClient;
+    private readonly SemaphoreSlim _checkLock = new(1, 1);
+    private string? _latestReleaseEtag;
+    private UpdateCheckResult? _cachedResult;
 
     public GitHubReleaseUpdater()
         : this(new HttpClient())
@@ -27,35 +31,55 @@ internal sealed class GitHubReleaseUpdater
 
     public async Task<UpdateCheckResult> CheckForUpdateAsync(CancellationToken cancellationToken = default)
     {
-        using var request = new HttpRequestMessage(HttpMethod.Get, LatestReleaseUrl);
-        request.Headers.UserAgent.ParseAdd(UserAgent);
-        request.Headers.Accept.ParseAdd("application/vnd.github+json");
-
-        using var response = await _httpClient.SendAsync(request, cancellationToken).ConfigureAwait(false);
-        response.EnsureSuccessStatusCode();
-
-        await using var stream = await response.Content.ReadAsStreamAsync(cancellationToken).ConfigureAwait(false);
-        var release = await JsonSerializer.DeserializeAsync<GitHubRelease>(stream, cancellationToken: cancellationToken)
-            .ConfigureAwait(false);
-
-        if (release is null || !TryParseVersion(release.TagName, out var latestVersion))
+        await _checkLock.WaitAsync(cancellationToken).ConfigureAwait(false);
+        try
         {
-            return UpdateCheckResult.Unavailable("Could not read the latest GitHub release.");
+            using var request = new HttpRequestMessage(HttpMethod.Get, LatestReleaseUrl);
+            request.Headers.UserAgent.ParseAdd(UserAgent);
+            request.Headers.Accept.ParseAdd("application/vnd.github+json");
+            if (!string.IsNullOrWhiteSpace(_latestReleaseEtag))
+            {
+                request.Headers.TryAddWithoutValidation("If-None-Match", _latestReleaseEtag);
+            }
+
+            using var response = await _httpClient.SendAsync(request, cancellationToken).ConfigureAwait(false);
+            if (response.StatusCode == HttpStatusCode.NotModified && _cachedResult is not null)
+            {
+                return _cachedResult;
+            }
+
+            response.EnsureSuccessStatusCode();
+
+            await using var stream = await response.Content.ReadAsStreamAsync(cancellationToken).ConfigureAwait(false);
+            var release = await JsonSerializer.DeserializeAsync<GitHubRelease>(stream, cancellationToken: cancellationToken)
+                .ConfigureAwait(false);
+
+            if (release is null || !TryParseVersion(release.TagName, out var latestVersion))
+            {
+                return UpdateCheckResult.Unavailable("Could not read the latest GitHub release.");
+            }
+
+            var currentVersion = CurrentVersion;
+            var installerAsset = SelectInstallerAsset(release.Assets);
+            var updateAvailable = CompareVersions(latestVersion, currentVersion) > 0;
+            var result = new UpdateCheckResult(
+                updateAvailable,
+                currentVersion,
+                latestVersion,
+                installerAsset?.BrowserDownloadUrl,
+                release.HtmlUrl,
+                updateAvailable
+                    ? $"Keebs {latestVersion} is available."
+                    : $"Keebs is up to date ({currentVersion}).");
+
+            _latestReleaseEtag = response.Headers.ETag?.ToString();
+            _cachedResult = result;
+            return result;
         }
-
-        var currentVersion = CurrentVersion;
-        var installerAsset = SelectInstallerAsset(release.Assets);
-        var updateAvailable = CompareVersions(latestVersion, currentVersion) > 0;
-
-        return new UpdateCheckResult(
-            updateAvailable,
-            currentVersion,
-            latestVersion,
-            installerAsset?.BrowserDownloadUrl,
-            release.HtmlUrl,
-            updateAvailable
-                ? $"Keebs {latestVersion} is available."
-                : $"Keebs is up to date ({currentVersion}).");
+        finally
+        {
+            _checkLock.Release();
+        }
     }
 
     public async Task<string> DownloadInstallerAsync(

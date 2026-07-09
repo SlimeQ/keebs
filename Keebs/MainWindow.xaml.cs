@@ -8,6 +8,7 @@ using System.Threading;
 using System.Threading.Tasks;
 using System.Windows;
 using System.Windows.Controls;
+using System.Windows.Controls.Primitives;
 using System.Windows.Input;
 using System.Windows.Interop;
 using System.Windows.Media;
@@ -18,6 +19,7 @@ namespace Keebs;
 public partial class MainWindow : Window, INotifyPropertyChanged
 {
     private static readonly TimeSpan FocusedContextReadTimeout = TimeSpan.FromMilliseconds(300);
+    internal static readonly TimeSpan AutomaticUpdateCheckInterval = TimeSpan.FromHours(1);
     private const double SwipeTapThreshold = 20;
     private const double SwipeActivationKeyDistance = 1.2;
     private const int MinimumSwipeLetters = 2;
@@ -36,10 +38,12 @@ public partial class MainWindow : Window, INotifyPropertyChanged
     private readonly SwipeTraceRecorder _swipeTraceRecorder = new();
     private TypingTestWindow? _typingTestWindow;
     private readonly bool _startFocusMonitors;
+    private readonly bool _checkForUpdates;
+    private DispatcherTimer? _updateCheckTimer;
     private readonly List<char> _swipeLetters = [];
     private readonly List<Point> _swipePoints = [];
     private readonly StringBuilder _inputLineBuffer = new();
-    private static readonly FontFamily TextKeyFontFamily = new("Segoe UI Variable Text, Segoe UI");
+    private static readonly FontFamily TextKeyFontFamily = new("Bahnschrift SemiCondensed, Segoe UI");
     private static readonly FontFamily IconKeyFontFamily = new("Segoe UI Symbol, Segoe UI");
     private TouchDevice? _activeTouchDevice;
     private bool _shift;
@@ -49,12 +53,14 @@ public partial class MainWindow : Window, INotifyPropertyChanged
     private bool _windows;
     private bool _predictionsEnabled = true;
     private bool _learningEnabled = true;
-    private bool _focusedTextContextSensitive;
+    private volatile bool _focusedTextInputActive = true;
+    private volatile bool _focusedTextContextSensitive;
     private bool _physicalSelectionActive;
     private bool _pointerGestureActive;
     private bool _swipeGestureActive;
     private int _focusedContextReadInFlight;
     private int _focusedContextRequestId;
+    private int _updateCheckInFlight;
     private Point _pointerDownPosition;
     private KeySpec? _pointerDownKey;
     private double _keyFontSize = 14;
@@ -67,19 +73,25 @@ public partial class MainWindow : Window, INotifyPropertyChanged
     private string _footerHintText = "Predictions are local. Sensitive fields get raw key input only.";
 
     public MainWindow()
-        : this(new TextPredictionEngine())
+        : this(new TextPredictionEngine(), startFocusMonitors: true, checkForUpdates: true)
     {
     }
 
     internal MainWindow(TextPredictionEngine predictionEngine)
-        : this(predictionEngine, startFocusMonitors: true)
+        : this(predictionEngine, startFocusMonitors: true, checkForUpdates: false)
     {
     }
 
     internal MainWindow(TextPredictionEngine predictionEngine, bool startFocusMonitors)
+        : this(predictionEngine, startFocusMonitors, checkForUpdates: false)
+    {
+    }
+
+    private MainWindow(TextPredictionEngine predictionEngine, bool startFocusMonitors, bool checkForUpdates)
     {
         _predictionEngine = predictionEngine;
         _startFocusMonitors = startFocusMonitors;
+        _checkForUpdates = checkForUpdates;
         InitializeComponent();
         DataContext = this;
         SuggestionStrip.ItemsSource = _suggestions;
@@ -98,6 +110,11 @@ public partial class MainWindow : Window, INotifyPropertyChanged
             });
         _physicalKeyboardMonitor.TextInputKeyPressed += (_, key) =>
         {
+            if (!ShouldProcessPhysicalKeyboardEvent(key))
+            {
+                return;
+            }
+
             if (key.IsAcceptFirstPredictionChord)
             {
                 key.Handled = true;
@@ -122,11 +139,17 @@ public partial class MainWindow : Window, INotifyPropertyChanged
                 RefreshFocusedInputState();
             }
 
+            if (_checkForUpdates)
+            {
+                StartAutomaticUpdateChecks();
+            }
+
             UpdateScale();
             ScheduleScaleUpdate();
         };
         Closed += (_, _) =>
         {
+            _updateCheckTimer?.Stop();
             _physicalKeyboardMonitor.Dispose();
             _sensitiveInputMonitor.Dispose();
         };
@@ -210,6 +233,41 @@ public partial class MainWindow : Window, INotifyPropertyChanged
         }
 
         return IntPtr.Zero;
+    }
+
+    private void Chassis_PreviewMouseLeftButtonDown(object sender, MouseButtonEventArgs e)
+    {
+        if (e.ChangedButton != MouseButton.Left || IsInteractiveElement(e.OriginalSource as DependencyObject))
+        {
+            return;
+        }
+
+        var handle = new WindowInteropHelper(this).Handle;
+        if (handle == IntPtr.Zero)
+        {
+            return;
+        }
+
+        ResetPointerGesture();
+        NativeMethods.BeginWindowDrag(handle);
+        e.Handled = true;
+    }
+
+    internal static bool IsInteractiveElement(DependencyObject? element)
+    {
+        while (element is not null)
+        {
+            if (element is ButtonBase)
+            {
+                return true;
+            }
+
+            element = element is Visual or System.Windows.Media.Media3D.Visual3D
+                ? VisualTreeHelper.GetParent(element)
+                : LogicalTreeHelper.GetParent(element);
+        }
+
+        return false;
     }
 
     private void BuildKeyboard()
@@ -366,17 +424,21 @@ public partial class MainWindow : Window, INotifyPropertyChanged
                 continue;
             }
 
+            var styleName = IsAccentKey(slot.Key)
+                ? "AccentButton"
+                : slot.Key.IsUtility
+                    ? "UtilityButton"
+                    : "KeyboardButton";
             var button = new Button
             {
                 Content = GetKeyDisplay(slot.Key),
                 Tag = slot.Key,
                 FontFamily = GetKeyFontFamily(slot.Key),
-                Style = (Style)FindResource(slot.Key.IsUtility
-                    ? "UtilityButton"
-                    : "KeyboardButton")
+                Style = (Style)FindResource(styleName)
             };
 
             button.Click += Key_Click;
+            button.PreviewMouseDown += Key_PreviewMouseDown;
             Grid.SetColumn(button, index);
             row.Children.Add(button);
         }
@@ -393,6 +455,55 @@ public partial class MainWindow : Window, INotifyPropertyChanged
         }
 
         PressKey(key);
+    }
+
+    private void Key_PreviewMouseDown(object sender, MouseButtonEventArgs e)
+    {
+        if (sender is not Button { Tag: KeySpec key } || GetPointerChordModifier(e.ChangedButton) is not { } modifier)
+        {
+            return;
+        }
+
+        e.Handled = true;
+        PressKeyWithPointerModifier(key, modifier);
+    }
+
+    internal static VirtualKey? GetPointerChordModifier(MouseButton button)
+    {
+        return button switch
+        {
+            MouseButton.Right => VirtualKey.Control,
+            MouseButton.Middle => VirtualKey.Alt,
+            _ => null
+        };
+    }
+
+    private void PressKeyWithPointerModifier(KeySpec key, VirtualKey pointerModifier)
+    {
+        if (key.VirtualKey is not { } virtualKey)
+        {
+            return;
+        }
+
+        var modifiers = GetActiveModifiers().ToList();
+        if (!modifiers.Contains(pointerModifier))
+        {
+            modifiers.Add(pointerModifier);
+        }
+
+        modifiers.Remove(virtualKey);
+
+        try
+        {
+            KeyboardInput.SendVirtualKeyChord(modifiers, virtualKey);
+        }
+        catch (InvalidOperationException ex)
+        {
+            ShowInputError(ex);
+            return;
+        }
+
+        ResetTransientModifiers();
     }
 
     private void PressKey(KeySpec key)
@@ -700,11 +811,14 @@ public partial class MainWindow : Window, INotifyPropertyChanged
             return;
         }
 
+        var suggestionsWereVisible = _suggestions.Count > 0;
         _suggestions.Clear();
         foreach (var suggestion in swipeSuggestions)
         {
             _suggestions.Add(suggestion);
         }
+
+        ScheduleScaleUpdateIfSuggestionVisibilityChanged(suggestionsWereVisible);
     }
 
     private bool TryCommitSwipe()
@@ -1513,6 +1627,17 @@ public partial class MainWindow : Window, INotifyPropertyChanged
         RefreshSuggestions();
     }
 
+    private bool ShouldProcessPhysicalKeyboardEvent(PhysicalKeyPressedEventArgs key)
+    {
+        if (_focusedTextInputActive)
+        {
+            return true;
+        }
+
+        var virtualKey = (VirtualKey)key.VirtualKey;
+        return _focusedTextContextSensitive && virtualKey is VirtualKey.Enter or VirtualKey.Tab;
+    }
+
     private void ResetAfterPhysicalSelectionEdit()
     {
         _physicalSelectionActive = false;
@@ -1677,6 +1802,7 @@ public partial class MainWindow : Window, INotifyPropertyChanged
         {
             FooterHintText = "Checking GitHub for updates...";
             var update = await _releaseUpdater.CheckForUpdateAsync();
+            ApplyUpdateAvailability(update);
             FooterHintText = update.Message;
 
             if (!update.IsUpdateAvailable)
@@ -1720,6 +1846,55 @@ public partial class MainWindow : Window, INotifyPropertyChanged
         }
     }
 
+    private void StartAutomaticUpdateChecks()
+    {
+        _updateCheckTimer = new DispatcherTimer(DispatcherPriority.ApplicationIdle, Dispatcher)
+        {
+            Interval = AutomaticUpdateCheckInterval
+        };
+        _updateCheckTimer.Tick += async (_, _) => await RefreshUpdateAvailabilityAsync();
+        _updateCheckTimer.Start();
+        _ = RefreshUpdateAvailabilityAsync();
+    }
+
+    private async Task RefreshUpdateAvailabilityAsync()
+    {
+        if (Interlocked.CompareExchange(ref _updateCheckInFlight, 1, 0) != 0)
+        {
+            return;
+        }
+
+        try
+        {
+            var update = await _releaseUpdater.CheckForUpdateAsync();
+            if (IsLoaded)
+            {
+                ApplyUpdateAvailability(update);
+            }
+        }
+        catch (Exception)
+        {
+            if (IsLoaded)
+            {
+                UpdateButton.ToolTip = "Could not check automatically. Click to retry.";
+            }
+        }
+        finally
+        {
+            Interlocked.Exchange(ref _updateCheckInFlight, 0);
+        }
+    }
+
+    internal void ApplyUpdateAvailability(UpdateCheckResult update)
+    {
+        UpdateAvailableIndicator.Visibility = update.IsUpdateAvailable
+            ? Visibility.Visible
+            : Visibility.Collapsed;
+        UpdateButton.ToolTip = update.IsUpdateAvailable
+            ? $"Keebs {update.LatestVersion} is available"
+            : $"Keebs is up to date ({update.CurrentVersion})";
+    }
+
     private static void OpenUrl(string url)
     {
         Process.Start(new ProcessStartInfo
@@ -1729,7 +1904,11 @@ public partial class MainWindow : Window, INotifyPropertyChanged
         });
     }
 
-    private bool PredictionsSuppressed => !_predictionsEnabled || _sensitiveInputMonitor.IsSensitive || _focusedTextContextSensitive;
+    private bool PredictionsSuppressed =>
+        !_predictionsEnabled ||
+        _startFocusMonitors && !_focusedTextInputActive ||
+        _sensitiveInputMonitor.IsSensitive ||
+        _focusedTextContextSensitive;
 
     private bool CanLearn => _learningEnabled && !PredictionsSuppressed;
 
@@ -1766,11 +1945,13 @@ public partial class MainWindow : Window, INotifyPropertyChanged
 
     private void RefreshSuggestions()
     {
+        var suggestionsWereVisible = _suggestions.Count > 0;
         _suggestions.Clear();
 
         if (PredictionsSuppressed)
         {
             _textSession.ResetPredictionContext();
+            ScheduleScaleUpdateIfSuggestionVisibilityChanged(suggestionsWereVisible);
             return;
         }
 
@@ -1778,10 +1959,21 @@ public partial class MainWindow : Window, INotifyPropertyChanged
         {
             _suggestions.Add(suggestion);
         }
+
+        ScheduleScaleUpdateIfSuggestionVisibilityChanged(suggestionsWereVisible);
+    }
+
+    private void ScheduleScaleUpdateIfSuggestionVisibilityChanged(bool suggestionsWereVisible)
+    {
+        if (suggestionsWereVisible != (_suggestions.Count > 0))
+        {
+            ScheduleScaleUpdate();
+        }
     }
 
     private void RefreshFocusedInputState()
     {
+        _focusedTextInputActive = FocusedTextContextReader.IsFocusedElementTextInput();
         _focusedTextContextSensitive = false;
         _inputLineBuffer.Clear();
         RefreshPrivacyState();
@@ -2021,9 +2213,13 @@ public partial class MainWindow : Window, INotifyPropertyChanged
                 {
                     button.Content = GetKeyDisplay(key);
                     button.FontFamily = GetKeyFontFamily(key);
-                    button.FontSize = IsIconKey(key)
-                        ? Math.Min(KeyFontSize * 1.2, keyMinHeight * 0.88)
-                        : KeyFontSize;
+                    var compactUtilityLabel = width < 700 && IsCompactUtilityLabel(key);
+                    button.Padding = compactUtilityLabel ? new Thickness(0) : new Thickness(2, 0, 2, 0);
+                    button.FontSize = compactUtilityLabel
+                        ? Math.Min(KeyFontSize, 9.5)
+                        : IsIconKey(key)
+                            ? Math.Min(KeyFontSize * 0.9, keyMinHeight * 0.68)
+                            : KeyFontSize;
                 }
             }
         }
@@ -2116,8 +2312,8 @@ public partial class MainWindow : Window, INotifyPropertyChanged
                 "Delete" => "Del",
                 "Insert" => "Ins",
                 "Home" => "Hm",
-                "PageUp" => "PgUp",
-                "PageDown" => "PgDn",
+                "PageUp" => width < 700 ? "Pg↑" : "PgUp",
+                "PageDown" => width < 700 ? "Pg↓" : "PgDn",
                 "PrintScreen" => "Prt",
                 "ScrollLock" => "Scr",
                 "Pause" => "Pau",
@@ -2180,6 +2376,21 @@ public partial class MainWindow : Window, INotifyPropertyChanged
         return TryGetIconDisplay(key, out _);
     }
 
+    private static bool IsAccentKey(KeySpec key)
+    {
+        return key.Id is
+            "Escape" or "Enter" or "Space" or
+            "Left" or "Up" or "Down" or "Right";
+    }
+
+    private static bool IsCompactUtilityLabel(KeySpec key)
+    {
+        return key.Id is
+            "PrintScreen" or "ScrollLock" or "Pause" or
+            "Insert" or "Home" or "PageUp" or
+            "Delete" or "End" or "PageDown";
+    }
+
     private static FontFamily GetKeyFontFamily(KeySpec key)
     {
         return IsIconKey(key) ? IconKeyFontFamily : TextKeyFontFamily;
@@ -2222,6 +2433,8 @@ public partial class MainWindow : Window, INotifyPropertyChanged
     {
         private const int GwlExStyle = -20;
         private const int WsExNoActivate = 0x08000000;
+        private const int WmNcLeftButtonDown = 0x00A1;
+        private const int HitTestCaption = 2;
 
         public static void MakeNoActivate(IntPtr hwnd)
         {
@@ -2229,11 +2442,23 @@ public partial class MainWindow : Window, INotifyPropertyChanged
             _ = SetWindowLong(hwnd, GwlExStyle, style | WsExNoActivate);
         }
 
+        public static void BeginWindowDrag(IntPtr hwnd)
+        {
+            ReleaseCapture();
+            _ = SendMessage(hwnd, WmNcLeftButtonDown, new IntPtr(HitTestCaption), IntPtr.Zero);
+        }
+
         [DllImport("user32.dll", SetLastError = true)]
         private static extern int GetWindowLong(IntPtr hwnd, int index);
 
         [DllImport("user32.dll", SetLastError = true)]
         private static extern int SetWindowLong(IntPtr hwnd, int index, int newLong);
+
+        [DllImport("user32.dll")]
+        private static extern bool ReleaseCapture();
+
+        [DllImport("user32.dll")]
+        private static extern IntPtr SendMessage(IntPtr hwnd, int message, IntPtr wParam, IntPtr lParam);
     }
 
     private sealed record KeySpec(

@@ -30,6 +30,16 @@ jobs:
         shell: pwsh
         run: dotnet restore Keebs.slnx
 
+      - name: Verify tag matches project version
+        shell: pwsh
+        run: |
+          [xml] $project = Get-Content Keebs/Keebs.csproj -Raw
+          $projectVersion = [string] $project.Project.PropertyGroup.Version
+          $tagVersion = "${{ github.ref_name }}" -replace '^v', ''
+          if ($tagVersion -ne $projectVersion) {
+            throw "Release tag version '$tagVersion' does not match project version '$projectVersion'."
+          }
+
       - name: Run tests
         shell: pwsh
         run: dotnet test Keebs.slnx --no-restore -c Release

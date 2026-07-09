@@ -12,6 +12,19 @@ $publishDir = Join-Path $root "artifacts\publish\$Runtime"
 $installerDir = Join-Path $root "artifacts\installer"
 $wxs = Join-Path $root "Installer\Keebs.wxs"
 $msi = Join-Path $installerDir "Keebs-Setup-$Runtime.msi"
+$projectXml = [xml](Get-Content -LiteralPath $project -Raw)
+$productVersion = [string]$projectXml.Project.PropertyGroup.Version
+
+if ([string]::IsNullOrWhiteSpace($productVersion)) {
+    throw "Keebs.csproj does not define a Version."
+}
+
+try {
+    [void][Version]::Parse($productVersion)
+}
+catch {
+    throw "Keebs.csproj Version '$productVersion' is not a valid MSI product version."
+}
 
 New-Item -ItemType Directory -Force -Path $publishDir, $installerDir | Out-Null
 
@@ -40,6 +53,7 @@ dotnet wix build $wxs `
     -arch x64 `
     -d "ProjectDir=$root" `
     -d "PublishDir=$publishDir" `
+    -d "ProductVersion=$productVersion" `
     -out $msi
 
 if ($LASTEXITCODE -ne 0) {

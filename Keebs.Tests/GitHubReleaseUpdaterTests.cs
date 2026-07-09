@@ -37,4 +37,51 @@ public sealed class GitHubReleaseUpdaterTests
         Assert.NotNull(asset);
         Assert.Equal("https://example.test/x64", asset.BrowserDownloadUrl);
     }
+
+    [Fact]
+    public async Task ReusesCachedResultWhenReleaseHasNotChanged()
+    {
+        var handler = new ConditionalReleaseHandler();
+        var updater = new GitHubReleaseUpdater(new HttpClient(handler));
+
+        var first = await updater.CheckForUpdateAsync();
+        var second = await updater.CheckForUpdateAsync();
+
+        Assert.Same(first, second);
+        Assert.Equal(2, handler.RequestCount);
+        Assert.True(handler.SawConditionalRequest);
+    }
+
+    private sealed class ConditionalReleaseHandler : HttpMessageHandler
+    {
+        public int RequestCount { get; private set; }
+
+        public bool SawConditionalRequest { get; private set; }
+
+        protected override Task<HttpResponseMessage> SendAsync(
+            HttpRequestMessage request,
+            CancellationToken cancellationToken)
+        {
+            RequestCount++;
+            if (RequestCount == 1)
+            {
+                var response = new HttpResponseMessage(System.Net.HttpStatusCode.OK)
+                {
+                    Content = new StringContent(
+                        """
+                        {
+                          "tag_name": "v99.0.0",
+                          "html_url": "https://example.test/release",
+                          "assets": []
+                        }
+                        """)
+                };
+                response.Headers.ETag = new System.Net.Http.Headers.EntityTagHeaderValue("\"release-1\"");
+                return Task.FromResult(response);
+            }
+
+            SawConditionalRequest = request.Headers.IfNoneMatch.Any(tag => tag.Tag == "\"release-1\"");
+            return Task.FromResult(new HttpResponseMessage(System.Net.HttpStatusCode.NotModified));
+        }
+    }
 }

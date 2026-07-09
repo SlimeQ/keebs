@@ -2,7 +2,7 @@
   <Package
     Name="Keebs"
     Manufacturer="Keebs"
-    Version="0.1.22.0"
+    Version="$(var.ProductVersion)"
     UpgradeCode="8b4c3fe3-0a14-44e2-afdb-89e13f936324"
     Scope="perMachine">
 
@@ -11,7 +11,7 @@
     <Icon Id="KeebsIcon" SourceFile="$(var.ProjectDir)\Keebs\Assets\keebs.ico" />
     <Property Id="ARPPRODUCTICON" Value="KeebsIcon" />
 
-    <StandardDirectory Id="ProgramFilesFolder">
+    <StandardDirectory Id="ProgramFiles64Folder">
       <Directory Id="INSTALLFOLDER" Name="Keebs">
         <Component Id="KeebsExecutable" Guid="8056cd8d-7871-4a39-b69b-3807367c0be3">
           <File
@@ -24,8 +24,8 @@
             Name="Keebs"
             Description="Open Keebs on-screen keyboard"
             WorkingDirectory="INSTALLFOLDER"
-            Icon="KeebsIcon"
-            Advertise="yes" />
+            Target="[INSTALLFOLDER]Keebs.exe"
+            Advertise="no" />
         </Component>
       </Directory>
     </StandardDirectory>

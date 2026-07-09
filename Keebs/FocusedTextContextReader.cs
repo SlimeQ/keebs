@@ -1,11 +1,29 @@
 using System.Windows.Automation;
 using System.Windows.Automation.Text;
+using System.Text;
 
 namespace Keebs;
 
 internal static class FocusedTextContextReader
 {
     private const int MaxContextCharacters = 500;
+
+    public static bool IsFocusedElementTextInput()
+    {
+        try
+        {
+            var element = AutomationElement.FocusedElement;
+            return element is not null && IsTextInputElement(element);
+        }
+        catch (ElementNotAvailableException)
+        {
+            return false;
+        }
+        catch (InvalidOperationException)
+        {
+            return false;
+        }
+    }
 
     public static string GetTextBeforeCaret()
     {
@@ -26,16 +44,51 @@ internal static class FocusedTextContextReader
 
     internal static string GetTextBeforeCaret(AutomationElement element)
     {
+        var candidates = new List<AutomationElement>();
         for (var depth = 0; element is not null && depth < 6; depth++)
         {
-            if (TryGetValuePatternContext(element, out var textBeforeCaret))
+            candidates.Add(element);
+
+            try
+            {
+                element = TreeWalker.ControlViewWalker.GetParent(element);
+            }
+            catch (ElementNotAvailableException)
+            {
+                break;
+            }
+        }
+
+        // A browser can expose a document-like TextPattern on an inner element and
+        // the actual editable ValuePattern on an ancestor. Prefer the editable value
+        // before falling back to document text so UI metadata is not treated as input.
+        foreach (var candidate in candidates)
+        {
+            if (TryGetValuePatternContext(candidate, out var textBeforeCaret))
             {
                 return textBeforeCaret;
             }
+        }
 
-            if (TryGetTextPatternContext(element, out textBeforeCaret))
+        foreach (var candidate in candidates)
+        {
+            if (TryGetTextPatternContext(candidate, out var textBeforeCaret))
             {
                 return textBeforeCaret;
+            }
+        }
+
+        return string.Empty;
+    }
+
+    internal static bool IsTextInputElement(AutomationElement element)
+    {
+        for (var depth = 0; element is not null && depth < 6; depth++)
+        {
+            if (TryGetPattern<ValuePattern>(element, ValuePattern.Pattern, out _) ||
+                TryGetPattern<TextPattern>(element, TextPattern.Pattern, out _))
+            {
+                return true;
             }
 
             try
@@ -48,7 +101,7 @@ internal static class FocusedTextContextReader
             }
         }
 
-        return string.Empty;
+        return false;
     }
 
     private static bool TryGetTextPatternContext(AutomationElement element, out string textBeforeCaret)
@@ -127,22 +180,51 @@ internal static class FocusedTextContextReader
 
     private static bool TryTrimContext(string? text, out string trimmedText)
     {
-        trimmedText = string.IsNullOrEmpty(text)
+        var context = string.IsNullOrEmpty(text)
             ? string.Empty
             : text[^Math.Min(text.Length, MaxContextCharacters)..];
+        trimmedText = SanitizeSeedText(context);
 
-        return trimmedText.Length > 0 && IsUsableSeedText(trimmedText);
+        return trimmedText.Trim().Length > 0;
     }
 
     internal static bool IsUsableSeedText(string text)
     {
-        var trimmedText = text.Trim();
-        if (trimmedText.Length == 0)
+        return SanitizeSeedText(text).Trim().Length > 0;
+    }
+
+    internal static string SanitizeSeedText(string text)
+    {
+        if (string.IsNullOrEmpty(text))
         {
-            return false;
+            return string.Empty;
         }
 
-        return !trimmedText.Equals("xhtml", StringComparison.OrdinalIgnoreCase) &&
-               !trimmedText.Equals("html", StringComparison.OrdinalIgnoreCase);
+        var builder = new StringBuilder(text.Length);
+        foreach (var character in text)
+        {
+            if (character is '\u200B' or '\u200C' or '\u200D' or '\uFEFF')
+            {
+                continue;
+            }
+
+            if (character == '\uFFFC' || char.IsControl(character) && character is not '\r' and not '\n' and not '\t')
+            {
+                builder.Append(' ');
+                continue;
+            }
+
+            builder.Append(character);
+        }
+
+        var sanitized = builder.ToString().TrimStart();
+        while (sanitized.StartsWith("xhtml", StringComparison.OrdinalIgnoreCase))
+        {
+            sanitized = sanitized["xhtml".Length..].TrimStart();
+        }
+
+        return sanitized.Trim().Equals("html", StringComparison.OrdinalIgnoreCase)
+            ? string.Empty
+            : sanitized;
     }
 }

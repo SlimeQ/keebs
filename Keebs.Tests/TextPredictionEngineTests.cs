@@ -135,7 +135,7 @@ public sealed class TextPredictionEngineTests
         var migratedJson = File.ReadAllText(profilePath);
 
         Assert.Equal("quincboard", suggestions[0]);
-        Assert.Contains("\"Version\": 5", migratedJson);
+        Assert.Contains("\"Version\": 6", migratedJson);
     }
 
     [Fact]
@@ -174,7 +174,7 @@ public sealed class TextPredictionEngineTests
         Assert.Equal("sample", swipeSuggestions[0]);
         Assert.Equal("skin", nextWordSuggestions[0]);
         Assert.Contains("\"quincboard\": 7", migratedJson);
-        Assert.Contains("\"Version\": 5", migratedJson);
+        Assert.Contains("\"Version\": 6", migratedJson);
     }
 
     [Fact]
@@ -189,6 +189,7 @@ public sealed class TextPredictionEngineTests
               "Version": 2,
               "WordFrequency": {
                 "xhtml": 10,
+                "xhtmlopenclaw": 9,
                 "iuds": 8,
                 "queryword": 3
               },
@@ -205,11 +206,12 @@ public sealed class TextPredictionEngineTests
         var migratedJson = File.ReadAllText(profilePath);
 
         Assert.DoesNotContain("xhtml", artifactSuggestions);
+        Assert.DoesNotContain("xhtmlopenclaw", migratedJson);
         Assert.Equal("queryword", realSuggestions[0]);
         Assert.DoesNotContain("xhtml", migratedJson);
         Assert.DoesNotContain("iuds", migratedJson);
         Assert.DoesNotContain("oik", migratedJson);
-        Assert.Contains("\"Version\": 5", migratedJson);
+        Assert.Contains("\"Version\": 6", migratedJson);
     }
 
     [Fact]
