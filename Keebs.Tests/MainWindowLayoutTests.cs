@@ -24,6 +24,10 @@ public sealed class MainWindowLayoutTests
                 Assert.True(window.LearningToggle.IsChecked);
                 Assert.Equal("Test", window.TypingTestButton.Content);
                 Assert.Equal(5, System.Windows.Controls.Grid.GetColumn(window.UpdateButton));
+                var footerGrid = Assert.IsType<System.Windows.Controls.Grid>(window.UpdateButton.Parent);
+                Assert.Equal(System.Windows.GridUnitType.Star, footerGrid.ColumnDefinitions[4].Width.GridUnitType);
+                Assert.Equal(System.Windows.GridUnitType.Auto, footerGrid.ColumnDefinitions[5].Width.GridUnitType);
+                Assert.Equal(System.Windows.HorizontalAlignment.Right, window.UpdateButton.HorizontalAlignment);
                 Assert.Equal(TimeSpan.FromHours(1), MainWindow.AutomaticUpdateCheckInterval);
 
                 window.Close();
@@ -55,6 +59,17 @@ public sealed class MainWindowLayoutTests
                 var window = new MainWindow(new TextPredictionEngine(GetProfilePath()), startFocusMonitors: false);
                 var currentVersion = new Version(1, 2, 3);
                 var latestVersion = new Version(1, 2, 4);
+
+                window.Show();
+                window.UpdateLayout();
+                var updateRight = window.UpdateButton.TranslatePoint(
+                    new System.Windows.Point(window.UpdateButton.ActualWidth, 0),
+                    window.FooterBar).X;
+
+                Assert.InRange(
+                    window.FooterBar.ActualWidth - updateRight,
+                    window.FooterBar.Padding.Right - 0.5,
+                    window.FooterBar.Padding.Right + 0.5);
 
                 window.ApplyUpdateAvailability(new UpdateCheckResult(
                     true,

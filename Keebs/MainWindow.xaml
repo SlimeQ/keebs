@@ -366,8 +366,8 @@
                 <ColumnDefinition Width="Auto" />
                 <ColumnDefinition Width="Auto" />
                 <ColumnDefinition Width="Auto" />
-                <ColumnDefinition Width="Auto" />
                 <ColumnDefinition Width="*" />
+                <ColumnDefinition Width="Auto" />
             </Grid.ColumnDefinitions>
 
             <CheckBox x:Name="PredictionToggle"
@@ -422,6 +422,7 @@
                     Grid.Column="5"
                     Style="{StaticResource UpdateButtonStyle}"
                     Margin="6,0,0,0"
+                    HorizontalAlignment="Right"
                     FontSize="{Binding RelativeSource={RelativeSource AncestorType=Window}, Path=StatusFontSize}"
                     Content="↑"
                     IsEnabled="False"
