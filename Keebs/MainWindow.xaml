@@ -213,15 +213,20 @@
             <Setter Property="Padding" Value="0" />
             <Setter Property="FontFamily" Value="Segoe UI Symbol" />
             <Setter Property="FontWeight" Value="Bold" />
-            <Setter Property="Background" Value="#623536" />
-            <Setter Property="BorderBrush" Value="#8E514C" />
+            <Setter Property="Foreground" Value="#687069" />
+            <Setter Property="Background" Value="#171B18" />
+            <Setter Property="BorderBrush" Value="#343B35" />
+            <Setter Property="Opacity" Value="0.72" />
             <Setter Property="ToolTipService.ShowOnDisabled" Value="True" />
             <Style.Triggers>
+                <Trigger Property="Tag" Value="Available">
+                    <Setter Property="Foreground" Value="{StaticResource TextPrimaryBrush}" />
+                    <Setter Property="Background" Value="#623536" />
+                    <Setter Property="BorderBrush" Value="#8E514C" />
+                    <Setter Property="Opacity" Value="1" />
+                </Trigger>
                 <Trigger Property="IsEnabled" Value="False">
-                    <Setter Property="Foreground" Value="#687069" />
-                    <Setter Property="Background" Value="#171B18" />
-                    <Setter Property="BorderBrush" Value="#343B35" />
-                    <Setter Property="Opacity" Value="0.72" />
+                    <Setter Property="Opacity" Value="0.4" />
                 </Trigger>
             </Style.Triggers>
         </Style>
@@ -425,9 +430,16 @@
                     HorizontalAlignment="Right"
                     FontSize="{Binding RelativeSource={RelativeSource AncestorType=Window}, Path=StatusFontSize}"
                     Content="↑"
-                    IsEnabled="False"
-                    ToolTip="No update available"
-                    Click="Update_Click" />
+                    ToolTip="Check for updates"
+                    Click="Update_Click">
+                <Button.ContextMenu>
+                    <ContextMenu>
+                        <MenuItem x:Name="CheckForUpdatesNowMenuItem"
+                                  Header="Check for updates now"
+                                  Click="CheckForUpdatesNow_Click" />
+                    </ContextMenu>
+                </Button.ContextMenu>
+            </Button>
 
             <Button x:Name="TypingTestButton"
                     Grid.Column="3"

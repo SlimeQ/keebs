@@ -1776,7 +1776,18 @@ public partial class MainWindow : Window, INotifyPropertyChanged
 
     private async void Update_Click(object sender, RoutedEventArgs e)
     {
-        await CheckForUpdatesAsync();
+        if (_updateAvailable)
+        {
+            await CheckForUpdatesAsync();
+            return;
+        }
+
+        await CheckForUpdatesNowAsync();
+    }
+
+    private async void CheckForUpdatesNow_Click(object sender, RoutedEventArgs e)
+    {
+        await CheckForUpdatesNowAsync();
     }
 
     private void TypingTest_Click(object sender, RoutedEventArgs e)
@@ -1840,7 +1851,44 @@ public partial class MainWindow : Window, INotifyPropertyChanged
             _updateOperationInProgress = false;
             if (IsLoaded)
             {
-                UpdateButton.IsEnabled = _updateAvailable;
+                UpdateButton.IsEnabled = true;
+            }
+
+            if (FooterHintText.Length == 0)
+            {
+                FooterHintText = previousHint;
+            }
+        }
+    }
+
+    private async Task CheckForUpdatesNowAsync()
+    {
+        if (_updateOperationInProgress)
+        {
+            return;
+        }
+
+        _updateOperationInProgress = true;
+        UpdateButton.IsEnabled = false;
+        var previousHint = FooterHintText;
+
+        try
+        {
+            FooterHintText = "Checking GitHub for updates...";
+            var update = await _releaseUpdater.CheckForUpdateAsync();
+            ApplyUpdateAvailability(update);
+            FooterHintText = update.Message;
+        }
+        catch (Exception ex)
+        {
+            FooterHintText = $"Update check failed: {ex.Message}";
+        }
+        finally
+        {
+            _updateOperationInProgress = false;
+            if (IsLoaded)
+            {
+                UpdateButton.IsEnabled = true;
             }
 
             if (FooterHintText.Length == 0)
@@ -1892,10 +1940,11 @@ public partial class MainWindow : Window, INotifyPropertyChanged
     internal void ApplyUpdateAvailability(UpdateCheckResult update)
     {
         _updateAvailable = update.IsUpdateAvailable;
-        UpdateButton.IsEnabled = _updateAvailable && !_updateOperationInProgress;
+        UpdateButton.Tag = _updateAvailable ? "Available" : null;
+        UpdateButton.IsEnabled = !_updateOperationInProgress;
         UpdateButton.ToolTip = update.IsUpdateAvailable
             ? $"Install Keebs {update.LatestVersion}"
-            : $"No update available ({update.CurrentVersion})";
+            : $"Check for updates (current: {update.CurrentVersion})";
     }
 
     private static void OpenUrl(string url)

@@ -24,6 +24,8 @@ public sealed class MainWindowLayoutTests
                 Assert.True(window.LearningToggle.IsChecked);
                 Assert.Equal("Test", window.TypingTestButton.Content);
                 Assert.Equal(5, System.Windows.Controls.Grid.GetColumn(window.UpdateButton));
+                Assert.True(window.UpdateButton.IsEnabled);
+                Assert.Equal("Check for updates now", window.CheckForUpdatesNowMenuItem.Header);
                 var footerGrid = Assert.IsType<System.Windows.Controls.Grid>(window.UpdateButton.Parent);
                 Assert.Equal(System.Windows.GridUnitType.Star, footerGrid.ColumnDefinitions[4].Width.GridUnitType);
                 Assert.Equal(System.Windows.GridUnitType.Auto, footerGrid.ColumnDefinitions[5].Width.GridUnitType);
@@ -49,7 +51,7 @@ public sealed class MainWindowLayoutTests
     }
 
     [Fact]
-    public void CompactUpdateButtonEnablesOnlyForAvailableRelease()
+    public void CompactUpdateButtonStaysInteractiveAndHighlightsAvailableRelease()
     {
         Exception? threadException = null;
         var thread = new Thread(() =>
@@ -80,6 +82,7 @@ public sealed class MainWindowLayoutTests
                     "Update available"));
 
                 Assert.True(window.UpdateButton.IsEnabled);
+                Assert.Equal("Available", window.UpdateButton.Tag);
                 Assert.Equal(22, window.UpdateButton.Width);
                 Assert.Contains(latestVersion.ToString(), Assert.IsType<string>(window.UpdateButton.ToolTip));
 
@@ -91,7 +94,8 @@ public sealed class MainWindowLayoutTests
                     null,
                     "Up to date"));
 
-                Assert.False(window.UpdateButton.IsEnabled);
+                Assert.True(window.UpdateButton.IsEnabled);
+                Assert.Null(window.UpdateButton.Tag);
                 window.Close();
             }
             catch (Exception ex)
