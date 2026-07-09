@@ -45,7 +45,7 @@ public sealed class MainWindowLayoutTests
     }
 
     [Fact]
-    public void UpdateIndicatorReflectsReleaseAvailability()
+    public void CompactUpdateButtonEnablesOnlyForAvailableRelease()
     {
         Exception? threadException = null;
         var thread = new Thread(() =>
@@ -64,7 +64,8 @@ public sealed class MainWindowLayoutTests
                     "https://example.test/release",
                     "Update available"));
 
-                Assert.Equal(System.Windows.Visibility.Visible, window.UpdateAvailableIndicator.Visibility);
+                Assert.True(window.UpdateButton.IsEnabled);
+                Assert.Equal(22, window.UpdateButton.Width);
                 Assert.Contains(latestVersion.ToString(), Assert.IsType<string>(window.UpdateButton.ToolTip));
 
                 window.ApplyUpdateAvailability(new UpdateCheckResult(
@@ -75,7 +76,7 @@ public sealed class MainWindowLayoutTests
                     null,
                     "Up to date"));
 
-                Assert.Equal(System.Windows.Visibility.Collapsed, window.UpdateAvailableIndicator.Visibility);
+                Assert.False(window.UpdateButton.IsEnabled);
                 window.Close();
             }
             catch (Exception ex)

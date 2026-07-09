@@ -52,6 +52,21 @@ public sealed class GitHubReleaseUpdaterTests
         Assert.True(handler.SawConditionalRequest);
     }
 
+    [Fact]
+    public void InstallerHandoffWaitsForExitThenInstallsAndRestarts()
+    {
+        var script = GitHubReleaseUpdater.CreateInstallerHandoffScript(
+            @"C:\Updates\Keeb's Setup.msi",
+            @"C:\Program Files\Keebs\Keebs.exe",
+            4321);
+
+        Assert.Contains("Wait-Process -Id 4321", script);
+        Assert.Contains("Keeb''s Setup.msi", script);
+        Assert.Contains("Start-Process -FilePath 'msiexec.exe'", script);
+        Assert.Contains("-Wait -PassThru", script);
+        Assert.Contains("Start-Process -FilePath 'C:\\Program Files\\Keebs\\Keebs.exe'", script);
+    }
+
     private sealed class ConditionalReleaseHandler : HttpMessageHandler
     {
         public int RequestCount { get; private set; }

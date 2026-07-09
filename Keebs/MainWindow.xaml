@@ -206,6 +206,26 @@
             </Setter>
         </Style>
 
+        <Style x:Key="UpdateButtonStyle" TargetType="Button" BasedOn="{StaticResource FooterButton}">
+            <Setter Property="MinWidth" Value="22" />
+            <Setter Property="Width" Value="22" />
+            <Setter Property="Height" Value="18" />
+            <Setter Property="Padding" Value="0" />
+            <Setter Property="FontFamily" Value="Segoe UI Symbol" />
+            <Setter Property="FontWeight" Value="Bold" />
+            <Setter Property="Background" Value="#623536" />
+            <Setter Property="BorderBrush" Value="#8E514C" />
+            <Setter Property="ToolTipService.ShowOnDisabled" Value="True" />
+            <Style.Triggers>
+                <Trigger Property="IsEnabled" Value="False">
+                    <Setter Property="Foreground" Value="#687069" />
+                    <Setter Property="Background" Value="#171B18" />
+                    <Setter Property="BorderBrush" Value="#343B35" />
+                    <Setter Property="Opacity" Value="0.72" />
+                </Trigger>
+            </Style.Triggers>
+        </Style>
+
         <Style TargetType="CheckBox">
             <Setter Property="Focusable" Value="False" />
             <Setter Property="Foreground" Value="{StaticResource TextPrimaryBrush}" />
@@ -400,24 +420,13 @@
 
             <Button x:Name="UpdateButton"
                     Grid.Column="5"
-                    Style="{StaticResource FooterButton}"
-                    Margin="8,0,0,0"
+                    Style="{StaticResource UpdateButtonStyle}"
+                    Margin="6,0,0,0"
                     FontSize="{Binding RelativeSource={RelativeSource AncestorType=Window}, Path=StatusFontSize}"
-                    ToolTip="Check for updates"
-                    Click="Update_Click">
-                <StackPanel Orientation="Horizontal">
-                    <TextBlock Text="Update" />
-                    <Ellipse x:Name="UpdateAvailableIndicator"
-                             Width="6"
-                             Height="6"
-                             Margin="5,0,0,0"
-                             VerticalAlignment="Center"
-                             Fill="#E0A84F"
-                             Stroke="#F6D99C"
-                             StrokeThickness="1"
-                             Visibility="Collapsed" />
-                </StackPanel>
-            </Button>
+                    Content="↑"
+                    IsEnabled="False"
+                    ToolTip="No update available"
+                    Click="Update_Click" />
 
             <Button x:Name="TypingTestButton"
                     Grid.Column="3"

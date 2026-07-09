@@ -3,6 +3,7 @@ using System.IO;
 using System.Net;
 using System.Net.Http;
 using System.Reflection;
+using System.Text;
 using System.Text.Json;
 using System.Text.Json.Serialization;
 
@@ -111,20 +112,59 @@ internal sealed class GitHubReleaseUpdater
         return installerPath;
     }
 
-    public static void LaunchInstaller(string installerPath)
+    public static void LaunchInstallerAndRestart(string installerPath)
     {
         if (!File.Exists(installerPath))
         {
             throw new FileNotFoundException("The downloaded installer was not found.", installerPath);
         }
 
-        Process.Start(new ProcessStartInfo
+        var executablePath = Environment.ProcessPath;
+        if (string.IsNullOrWhiteSpace(executablePath) || !File.Exists(executablePath))
         {
-            FileName = "msiexec.exe",
-            Arguments = $"/i \"{installerPath}\"",
-            UseShellExecute = true,
-            Verb = "runas"
-        });
+            throw new FileNotFoundException("The running Keebs executable could not be located.", executablePath);
+        }
+
+        var script = CreateInstallerHandoffScript(installerPath, executablePath, Environment.ProcessId);
+        var encodedScript = Convert.ToBase64String(Encoding.Unicode.GetBytes(script));
+        var processStartInfo = new ProcessStartInfo
+        {
+            FileName = "powershell.exe",
+            UseShellExecute = false,
+            CreateNoWindow = true,
+            WindowStyle = ProcessWindowStyle.Hidden
+        };
+        processStartInfo.ArgumentList.Add("-NoLogo");
+        processStartInfo.ArgumentList.Add("-NoProfile");
+        processStartInfo.ArgumentList.Add("-NonInteractive");
+        processStartInfo.ArgumentList.Add("-WindowStyle");
+        processStartInfo.ArgumentList.Add("Hidden");
+        processStartInfo.ArgumentList.Add("-EncodedCommand");
+        processStartInfo.ArgumentList.Add(encodedScript);
+
+        if (Process.Start(processStartInfo) is null)
+        {
+            throw new InvalidOperationException("Could not start the Keebs update handoff process.");
+        }
+    }
+
+    internal static string CreateInstallerHandoffScript(string installerPath, string executablePath, int processId)
+    {
+        var escapedInstallerPath = EscapePowerShellLiteral(installerPath);
+        var escapedExecutablePath = EscapePowerShellLiteral(executablePath);
+        return $$"""
+            $ErrorActionPreference = 'SilentlyContinue'
+            Wait-Process -Id {{processId}} -Timeout 120 -ErrorAction SilentlyContinue
+            $installer = Start-Process -FilePath 'msiexec.exe' -ArgumentList @('/i', '"{{escapedInstallerPath}}"', '/passive', '/norestart') -Verb RunAs -Wait -PassThru
+            $exitCode = if ($null -eq $installer) { 1 } else { $installer.ExitCode }
+            if (Test-Path -LiteralPath '{{escapedExecutablePath}}') { Start-Process -FilePath '{{escapedExecutablePath}}' }
+            exit $exitCode
+            """;
+    }
+
+    private static string EscapePowerShellLiteral(string value)
+    {
+        return value.Replace("'", "''", StringComparison.Ordinal);
     }
 
     internal static GitHubReleaseAsset? SelectInstallerAsset(IReadOnlyList<GitHubReleaseAsset> assets)

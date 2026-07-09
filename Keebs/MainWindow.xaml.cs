@@ -53,6 +53,8 @@ public partial class MainWindow : Window, INotifyPropertyChanged
     private bool _windows;
     private bool _predictionsEnabled = true;
     private bool _learningEnabled = true;
+    private bool _updateAvailable;
+    private bool _updateOperationInProgress;
     private volatile bool _focusedTextInputActive = true;
     private volatile bool _focusedTextContextSensitive;
     private bool _physicalSelectionActive;
@@ -1795,6 +1797,7 @@ public partial class MainWindow : Window, INotifyPropertyChanged
 
     private async Task CheckForUpdatesAsync()
     {
+        _updateOperationInProgress = true;
         UpdateButton.IsEnabled = false;
         var previousHint = FooterHintText;
 
@@ -1825,8 +1828,8 @@ public partial class MainWindow : Window, INotifyPropertyChanged
             var installerPath = await _releaseUpdater.DownloadInstallerAsync(update);
 
             FooterHintText = "Launching installer...";
-            GitHubReleaseUpdater.LaunchInstaller(installerPath);
-            Close();
+            GitHubReleaseUpdater.LaunchInstallerAndRestart(installerPath);
+            Application.Current.Shutdown();
         }
         catch (Exception ex)
         {
@@ -1834,9 +1837,10 @@ public partial class MainWindow : Window, INotifyPropertyChanged
         }
         finally
         {
+            _updateOperationInProgress = false;
             if (IsLoaded)
             {
-                UpdateButton.IsEnabled = true;
+                UpdateButton.IsEnabled = _updateAvailable;
             }
 
             if (FooterHintText.Length == 0)
@@ -1887,12 +1891,11 @@ public partial class MainWindow : Window, INotifyPropertyChanged
 
     internal void ApplyUpdateAvailability(UpdateCheckResult update)
     {
-        UpdateAvailableIndicator.Visibility = update.IsUpdateAvailable
-            ? Visibility.Visible
-            : Visibility.Collapsed;
+        _updateAvailable = update.IsUpdateAvailable;
+        UpdateButton.IsEnabled = _updateAvailable && !_updateOperationInProgress;
         UpdateButton.ToolTip = update.IsUpdateAvailable
-            ? $"Keebs {update.LatestVersion} is available"
-            : $"Keebs is up to date ({update.CurrentVersion})";
+            ? $"Install Keebs {update.LatestVersion}"
+            : $"No update available ({update.CurrentVersion})";
     }
 
     private static void OpenUrl(string url)
