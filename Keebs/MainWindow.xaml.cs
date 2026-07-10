@@ -31,6 +31,7 @@ public partial class MainWindow : Window, INotifyPropertyChanged
     private const double SwipeContextScoreBonus = 4.0;
     private readonly ObservableCollection<string> _suggestions = [];
     private readonly TextPredictionEngine _predictionEngine;
+    private readonly Func<string> _readFocusedTextContext;
     private readonly TextSession _textSession = new();
     private readonly SensitiveInputMonitor _sensitiveInputMonitor = new();
     private readonly PhysicalKeyboardMonitor _physicalKeyboardMonitor = new();
@@ -76,23 +77,36 @@ public partial class MainWindow : Window, INotifyPropertyChanged
     private string _footerHintText = "Predictions are local. Sensitive fields get raw key input only.";
 
     public MainWindow()
-        : this(new TextPredictionEngine(), startFocusMonitors: true, checkForUpdates: true)
+        : this(new TextPredictionEngine(), startFocusMonitors: true, checkForUpdates: true, FocusedTextContextReader.GetTextBeforeCaret)
     {
     }
 
     internal MainWindow(TextPredictionEngine predictionEngine)
-        : this(predictionEngine, startFocusMonitors: true, checkForUpdates: false)
+        : this(predictionEngine, startFocusMonitors: true, checkForUpdates: false, FocusedTextContextReader.GetTextBeforeCaret)
     {
     }
 
     internal MainWindow(TextPredictionEngine predictionEngine, bool startFocusMonitors)
-        : this(predictionEngine, startFocusMonitors, checkForUpdates: false)
+        : this(predictionEngine, startFocusMonitors, checkForUpdates: false, FocusedTextContextReader.GetTextBeforeCaret)
     {
     }
 
-    private MainWindow(TextPredictionEngine predictionEngine, bool startFocusMonitors, bool checkForUpdates)
+    internal MainWindow(
+        TextPredictionEngine predictionEngine,
+        bool startFocusMonitors,
+        Func<string> readFocusedTextContext)
+        : this(predictionEngine, startFocusMonitors, checkForUpdates: false, readFocusedTextContext)
+    {
+    }
+
+    private MainWindow(
+        TextPredictionEngine predictionEngine,
+        bool startFocusMonitors,
+        bool checkForUpdates,
+        Func<string> readFocusedTextContext)
     {
         _predictionEngine = predictionEngine;
+        _readFocusedTextContext = readFocusedTextContext;
         _startFocusMonitors = startFocusMonitors;
         _checkForUpdates = checkForUpdates;
         InitializeComponent();
@@ -2085,19 +2099,15 @@ public partial class MainWindow : Window, INotifyPropertyChanged
 
         try
         {
-            var readTask = Task.Run(FocusedTextContextReader.GetTextBeforeCaret);
+            var readTask = Task.Run(_readFocusedTextContext);
             var completedTask = await Task.WhenAny(readTask, Task.Delay(FocusedContextReadTimeout)).ConfigureAwait(false);
             if (completedTask != readTask)
             {
-                _ = readTask.ContinueWith(
-                    completedRead =>
-                    {
-                        _ = completedRead.Exception;
-                        CompleteFocusedInputSeedRead(requestId);
-                    },
-                    CancellationToken.None,
-                    TaskContinuationOptions.ExecuteSynchronously,
-                    TaskScheduler.Default);
+                // A slow UI Automation provider must not hold every newer focus
+                // request behind it. Release the slot now, then apply this result
+                // only if it eventually completes while still current.
+                CompleteFocusedInputSeedRead(requestId);
+                _ = ApplyFocusedInputContextWhenReadyAsync(readTask, requestId, allowEmptyContext);
                 return;
             }
 
@@ -2111,6 +2121,31 @@ public partial class MainWindow : Window, INotifyPropertyChanged
 
         CompleteFocusedInputSeedRead(requestId);
 
+        await ApplyFocusedInputContextAsync(textBeforeCaret, requestId, allowEmptyContext);
+    }
+
+    private async Task ApplyFocusedInputContextWhenReadyAsync(
+        Task<string> readTask,
+        int requestId,
+        bool allowEmptyContext)
+    {
+        try
+        {
+            var textBeforeCaret = await readTask.ConfigureAwait(false);
+            await ApplyFocusedInputContextAsync(textBeforeCaret, requestId, allowEmptyContext);
+        }
+        catch (Exception)
+        {
+            // UI Automation providers can disappear while a timed-out request
+            // is still running. The next focus request will supply fresh state.
+        }
+    }
+
+    private async Task ApplyFocusedInputContextAsync(
+        string textBeforeCaret,
+        int requestId,
+        bool allowEmptyContext)
+    {
         await Dispatcher.InvokeAsync(() =>
         {
             if (requestId != Volatile.Read(ref _focusedContextRequestId) || !_predictionsEnabled || _sensitiveInputMonitor.IsSensitive)

@@ -5,6 +5,61 @@ namespace Keebs.Tests;
 public sealed class MainWindowLayoutTests
 {
     [Fact]
+    public void TimedOutContextReadDoesNotBlockLatestFocusRequest()
+    {
+        Exception? threadException = null;
+        var thread = new Thread(() =>
+        {
+            try
+            {
+                using var firstReadStarted = new ManualResetEventSlim();
+                using var releaseFirstRead = new ManualResetEventSlim();
+                using var secondReadStarted = new ManualResetEventSlim();
+                var readCount = 0;
+                var window = new MainWindow(
+                    new TextPredictionEngine(GetProfilePath()),
+                    startFocusMonitors: false,
+                    () =>
+                    {
+                        if (Interlocked.Increment(ref readCount) == 1)
+                        {
+                            firstReadStarted.Set();
+                            Assert.True(releaseFirstRead.Wait(TimeSpan.FromSeconds(5)));
+                            return "stale field";
+                        }
+
+                        secondReadStarted.Set();
+                        return "current field";
+                    });
+                var requestSeed = typeof(MainWindow).GetMethod(
+                    "RequestFocusedInputSeed",
+                    System.Reflection.BindingFlags.Instance | System.Reflection.BindingFlags.NonPublic)!;
+
+                requestSeed.Invoke(window, [true]);
+                Assert.True(firstReadStarted.Wait(TimeSpan.FromSeconds(5)));
+                requestSeed.Invoke(window, [true]);
+
+                Assert.True(secondReadStarted.Wait(TimeSpan.FromSeconds(2)));
+                releaseFirstRead.Set();
+                window.Close();
+            }
+            catch (Exception ex)
+            {
+                threadException = ex;
+            }
+        });
+
+        thread.SetApartmentState(ApartmentState.STA);
+        thread.Start();
+        thread.Join();
+
+        if (threadException is not null)
+        {
+            throw threadException;
+        }
+    }
+
+    [Fact]
     public void WindowSupportsCompactResizableLayout()
     {
         Exception? threadException = null;
