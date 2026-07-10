@@ -23,10 +23,11 @@ public sealed class MainWindowLayoutTests
                 Assert.True(window.PredictionToggle.IsChecked);
                 Assert.True(window.LearningToggle.IsChecked);
                 Assert.Equal("Test", window.TypingTestButton.Content);
-                Assert.Equal(5, System.Windows.Controls.Grid.GetColumn(window.UpdateButton));
+                Assert.Equal(5, System.Windows.Controls.Grid.GetColumn(window.UpdateCluster));
                 Assert.True(window.UpdateButton.IsEnabled);
                 Assert.Equal("Check for updates now", window.CheckForUpdatesNowMenuItem.Header);
-                var footerGrid = Assert.IsType<System.Windows.Controls.Grid>(window.UpdateButton.Parent);
+                Assert.Equal($"v{GitHubReleaseUpdater.CurrentVersion}", window.VersionLabel.Text);
+                var footerGrid = Assert.IsType<System.Windows.Controls.Grid>(window.UpdateCluster.Parent);
                 Assert.Equal(System.Windows.GridUnitType.Star, footerGrid.ColumnDefinitions[4].Width.GridUnitType);
                 Assert.Equal(System.Windows.GridUnitType.Auto, footerGrid.ColumnDefinitions[5].Width.GridUnitType);
                 Assert.Equal(System.Windows.HorizontalAlignment.Right, window.UpdateButton.HorizontalAlignment);

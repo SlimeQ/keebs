@@ -95,6 +95,7 @@ public partial class MainWindow : Window, INotifyPropertyChanged
         _startFocusMonitors = startFocusMonitors;
         _checkForUpdates = checkForUpdates;
         InitializeComponent();
+        VersionLabel.Text = VersionLabelText;
         DataContext = this;
         SuggestionStrip.ItemsSource = _suggestions;
         BuildKeyboard();
@@ -163,6 +164,8 @@ public partial class MainWindow : Window, INotifyPropertyChanged
     }
 
     public event PropertyChangedEventHandler? PropertyChanged;
+
+    public string VersionLabelText => $"v{GitHubReleaseUpdater.CurrentVersion}";
 
     public double KeyFontSize
     {

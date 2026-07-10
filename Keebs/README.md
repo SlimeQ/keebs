@@ -95,7 +95,7 @@ GitHub releases are built automatically from version tags in the canonical
 `SlimeQ/keebs` repository.
 
 ```powershell
-git tag v0.1.34
+git tag v0.1.35
 git push origin main --tags
 ```
 

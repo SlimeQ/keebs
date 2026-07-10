@@ -423,23 +423,34 @@
                 </Grid>
             </Border>
 
-            <Button x:Name="UpdateButton"
-                    Grid.Column="5"
-                    Style="{StaticResource UpdateButtonStyle}"
-                    Margin="6,0,0,0"
-                    HorizontalAlignment="Right"
-                    FontSize="{Binding RelativeSource={RelativeSource AncestorType=Window}, Path=StatusFontSize}"
-                    Content="↑"
-                    ToolTip="Check for updates"
-                    Click="Update_Click">
-                <Button.ContextMenu>
-                    <ContextMenu>
-                        <MenuItem x:Name="CheckForUpdatesNowMenuItem"
-                                  Header="Check for updates now"
-                                  Click="CheckForUpdatesNow_Click" />
-                    </ContextMenu>
-                </Button.ContextMenu>
-            </Button>
+            <StackPanel x:Name="UpdateCluster"
+                        Grid.Column="5"
+                        Orientation="Horizontal"
+                        HorizontalAlignment="Right"
+                        VerticalAlignment="Center">
+                <TextBlock x:Name="VersionLabel"
+                           Margin="0,0,5,0"
+                           VerticalAlignment="Center"
+                           FontFamily="Bahnschrift SemiCondensed, Segoe UI"
+                           FontSize="{Binding RelativeSource={RelativeSource AncestorType=Window}, Path=StatusFontSize}"
+                           Foreground="{StaticResource TextMutedBrush}"
+                           Opacity="0.82" />
+                <Button x:Name="UpdateButton"
+                        Style="{StaticResource UpdateButtonStyle}"
+                        HorizontalAlignment="Right"
+                        FontSize="{Binding RelativeSource={RelativeSource AncestorType=Window}, Path=StatusFontSize}"
+                        Content="↑"
+                        ToolTip="Check for updates"
+                        Click="Update_Click">
+                    <Button.ContextMenu>
+                        <ContextMenu>
+                            <MenuItem x:Name="CheckForUpdatesNowMenuItem"
+                                      Header="Check for updates now"
+                                      Click="CheckForUpdatesNow_Click" />
+                        </ContextMenu>
+                    </Button.ContextMenu>
+                </Button>
+            </StackPanel>
 
             <Button x:Name="TypingTestButton"
                     Grid.Column="3"
