@@ -30,12 +30,29 @@ internal sealed class SensitiveInputMonitor : IDisposable
     ];
 
     private readonly AutomationFocusChangedEventHandler _focusChangedHandler;
+    private readonly Func<bool> _readFocusedElementSensitivity;
+    private readonly bool _subscribeToAutomationFocusChanges;
+    private int _processedRequestId;
     private int _updateInFlight;
     private int _updateRequestId;
-    private bool _started;
+    private volatile bool _started;
 
     public SensitiveInputMonitor()
+        : this(IsFocusedElementSensitive, subscribeToAutomationFocusChanges: true)
     {
+    }
+
+    internal SensitiveInputMonitor(Func<bool> readFocusedElementSensitivity)
+        : this(readFocusedElementSensitivity, subscribeToAutomationFocusChanges: false)
+    {
+    }
+
+    private SensitiveInputMonitor(
+        Func<bool> readFocusedElementSensitivity,
+        bool subscribeToAutomationFocusChanges)
+    {
+        _readFocusedElementSensitivity = readFocusedElementSensitivity;
+        _subscribeToAutomationFocusChanges = subscribeToAutomationFocusChanges;
         _focusChangedHandler = (_, _) => QueueUpdateFromFocusedElement();
     }
 
@@ -53,7 +70,11 @@ internal sealed class SensitiveInputMonitor : IDisposable
         }
 
         _started = true;
-        Automation.AddAutomationFocusChangedEventHandler(_focusChangedHandler);
+        if (_subscribeToAutomationFocusChanges)
+        {
+            Automation.AddAutomationFocusChangedEventHandler(_focusChangedHandler);
+        }
+
         QueueUpdateFromFocusedElement();
     }
 
@@ -64,45 +85,77 @@ internal sealed class SensitiveInputMonitor : IDisposable
             return;
         }
 
-        Automation.RemoveAutomationFocusChangedEventHandler(_focusChangedHandler);
         _started = false;
+        if (_subscribeToAutomationFocusChanges)
+        {
+            Automation.RemoveAutomationFocusChangedEventHandler(_focusChangedHandler);
+        }
+    }
+
+    internal void RequestRefresh()
+    {
+        if (_started)
+        {
+            QueueUpdateFromFocusedElement();
+        }
     }
 
     private void QueueUpdateFromFocusedElement()
     {
-        var requestId = Interlocked.Increment(ref _updateRequestId);
+        Interlocked.Increment(ref _updateRequestId);
         if (Interlocked.CompareExchange(ref _updateInFlight, 1, 0) != 0)
         {
             return;
         }
 
-        _ = Task.Run(() => UpdateFromFocusedElement(requestId));
+        _ = Task.Run(UpdateFromFocusedElement);
     }
 
-    private void UpdateFromFocusedElement(int requestId)
+    private void UpdateFromFocusedElement()
     {
         try
         {
-            var sensitive = IsFocusedElementSensitive();
-            if (!_started || requestId != Volatile.Read(ref _updateRequestId))
+            while (_started)
             {
+                var requestId = Volatile.Read(ref _updateRequestId);
+                var sensitive = _readFocusedElementSensitivity();
+                if (!_started)
+                {
+                    return;
+                }
+
+                // Focus may change while UI Automation is reading the old element.
+                // Skip that stale result, but keep this worker alive for the newest request.
+                if (requestId != Volatile.Read(ref _updateRequestId))
+                {
+                    continue;
+                }
+
+                var stateChanged = sensitive != IsSensitive;
+                IsSensitive = sensitive;
+                Volatile.Write(ref _processedRequestId, requestId);
+                FocusChanged?.Invoke(this, EventArgs.Empty);
+
+                if (stateChanged)
+                {
+                    StateChanged?.Invoke(this, EventArgs.Empty);
+                }
+
                 return;
             }
-
-            var stateChanged = sensitive != IsSensitive;
-            IsSensitive = sensitive;
-            FocusChanged?.Invoke(this, EventArgs.Empty);
-
-            if (!stateChanged)
-            {
-                return;
-            }
-
-            StateChanged?.Invoke(this, EventArgs.Empty);
         }
         finally
         {
             Interlocked.Exchange(ref _updateInFlight, 0);
+
+            // Close the race where another focus event arrived after the last
+            // version check but before this worker released the in-flight slot.
+            if (_started &&
+                Volatile.Read(ref _processedRequestId) != Volatile.Read(ref _updateRequestId) &&
+                Interlocked.CompareExchange(ref _updateInFlight, 1, 0) == 0)
+            {
+                _ = Task.Run(UpdateFromFocusedElement);
+            }
         }
     }
 

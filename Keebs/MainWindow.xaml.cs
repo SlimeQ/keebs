@@ -60,6 +60,7 @@ public partial class MainWindow : Window, INotifyPropertyChanged
     private bool _physicalSelectionActive;
     private bool _pointerGestureActive;
     private bool _swipeGestureActive;
+    private volatile bool _focusedContextAllowEmptyContext;
     private int _focusedContextReadInFlight;
     private int _focusedContextRequestId;
     private int _updateCheckInFlight;
@@ -1764,6 +1765,12 @@ public partial class MainWindow : Window, INotifyPropertyChanged
 
         RefreshPrivacyState();
         RefreshSuggestions();
+
+        if (_predictionsEnabled && _startFocusMonitors)
+        {
+            _sensitiveInputMonitor.RequestRefresh();
+            RefreshFocusedInputState();
+        }
     }
 
     private void Learning_Changed(object sender, RoutedEventArgs e)
@@ -2046,13 +2053,30 @@ public partial class MainWindow : Window, INotifyPropertyChanged
 
     private void RequestFocusedInputSeed(bool allowEmptyContext)
     {
-        var requestId = Interlocked.Increment(ref _focusedContextRequestId);
+        _focusedContextAllowEmptyContext = allowEmptyContext;
+        Interlocked.Increment(ref _focusedContextRequestId);
+        TryStartFocusedInputSeedRead();
+    }
+
+    private void TryStartFocusedInputSeedRead()
+    {
         if (Interlocked.CompareExchange(ref _focusedContextReadInFlight, 1, 0) != 0)
         {
             return;
         }
 
-        _ = ReadFocusedInputContextAsync(requestId, allowEmptyContext);
+        var requestId = Volatile.Read(ref _focusedContextRequestId);
+        _ = ReadFocusedInputContextAsync(requestId, _focusedContextAllowEmptyContext);
+    }
+
+    private void CompleteFocusedInputSeedRead(int requestId)
+    {
+        Interlocked.Exchange(ref _focusedContextReadInFlight, 0);
+
+        if (requestId != Volatile.Read(ref _focusedContextRequestId))
+        {
+            TryStartFocusedInputSeedRead();
+        }
     }
 
     private async Task ReadFocusedInputContextAsync(int requestId, bool allowEmptyContext)
@@ -2066,35 +2090,26 @@ public partial class MainWindow : Window, INotifyPropertyChanged
             if (completedTask != readTask)
             {
                 _ = readTask.ContinueWith(
-                    _ => Interlocked.Exchange(ref _focusedContextReadInFlight, 0),
+                    completedRead =>
+                    {
+                        _ = completedRead.Exception;
+                        CompleteFocusedInputSeedRead(requestId);
+                    },
+                    CancellationToken.None,
+                    TaskContinuationOptions.ExecuteSynchronously,
                     TaskScheduler.Default);
                 return;
             }
 
             textBeforeCaret = await readTask.ConfigureAwait(false);
         }
-        catch (InvalidOperationException)
-        {
-            Interlocked.Exchange(ref _focusedContextReadInFlight, 0);
-            return;
-        }
-        catch (System.Windows.Automation.ElementNotAvailableException)
-        {
-            Interlocked.Exchange(ref _focusedContextReadInFlight, 0);
-            return;
-        }
-        catch (UnauthorizedAccessException)
-        {
-            Interlocked.Exchange(ref _focusedContextReadInFlight, 0);
-            return;
-        }
         catch (Exception)
         {
-            Interlocked.Exchange(ref _focusedContextReadInFlight, 0);
+            CompleteFocusedInputSeedRead(requestId);
             return;
         }
 
-        Interlocked.Exchange(ref _focusedContextReadInFlight, 0);
+        CompleteFocusedInputSeedRead(requestId);
 
         await Dispatcher.InvokeAsync(() =>
         {

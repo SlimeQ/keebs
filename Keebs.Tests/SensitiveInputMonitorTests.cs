@@ -3,6 +3,36 @@ namespace Keebs.Tests;
 public sealed class SensitiveInputMonitorTests
 {
     [Fact]
+    public void ProcessesLatestFocusRequestQueuedWhileReadIsInFlight()
+    {
+        using var firstReadStarted = new ManualResetEventSlim();
+        using var releaseFirstRead = new ManualResetEventSlim();
+        using var focusChanged = new ManualResetEventSlim();
+        var readCount = 0;
+        using var monitor = new SensitiveInputMonitor(() =>
+        {
+            if (Interlocked.Increment(ref readCount) == 1)
+            {
+                firstReadStarted.Set();
+                Assert.True(releaseFirstRead.Wait(TimeSpan.FromSeconds(5)));
+                return true;
+            }
+
+            return false;
+        });
+        monitor.FocusChanged += (_, _) => focusChanged.Set();
+
+        monitor.Start();
+        Assert.True(firstReadStarted.Wait(TimeSpan.FromSeconds(5)));
+        monitor.RequestRefresh();
+        releaseFirstRead.Set();
+
+        Assert.True(focusChanged.Wait(TimeSpan.FromSeconds(5)));
+        Assert.True(Volatile.Read(ref readCount) >= 2);
+        Assert.False(monitor.IsSensitive);
+    }
+
+    [Fact]
     public void DoesNotTreatCssTokenClassAsSensitiveMetadata()
     {
         const string metadata = "text-size-chat ProseMirror text-token-foreground overflow-y-auto";
