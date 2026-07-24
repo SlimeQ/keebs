@@ -100,6 +100,12 @@ python .\tools\postprocess_icon.py `
   one. Reads whose text predates a keystroke that landed while they were in flight
   are discarded as well. An empty answer is only believed once the session is
   empty too, so deleting the last character still clears the context.
+- Keystrokes must not stall the window. Spell checking walks only the vocabulary
+  buckets for the first two letters of the typed word instead of the whole
+  dictionary, holding a key repeats one accessibility read after the burst
+  settles rather than one per repeat, a discarded read skips the predictor
+  entirely, and asking UI Automation what has focus runs off the UI thread so a
+  busy application cannot freeze the keyboard.
 - Press `Update` to check the latest GitHub release, download the attached MSI,
   and launch the installer.
 - Press `Test` to open the local typing-run harness. Finished runs are appended
@@ -113,7 +119,7 @@ GitHub releases are built automatically from version tags in the canonical
 `SlimeQ/keebs` repository.
 
 ```powershell
-git tag v0.1.39
+git tag v0.1.40
 git push origin main --tags
 ```
 

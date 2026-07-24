@@ -21,6 +21,7 @@ internal sealed class TextPredictionEngine
     private static readonly Lazy<HashSet<string>> SeedVocabularyLookup = new(BuildSeedVocabularyLookup);
     private static readonly Lazy<Dictionary<string, int>> SeedRank = new(BuildSeedRank);
     private static readonly Lazy<PretrainedModel> Pretrained = new(BuildPretrainedModel);
+    private static readonly Lazy<Dictionary<char, string[]>> SpellCheckIndex = new(BuildSpellCheckIndex);
 
     private readonly string _profilePath;
     private readonly Dictionary<string, int> _wordFrequency = new(StringComparer.OrdinalIgnoreCase);
@@ -654,7 +655,12 @@ internal sealed class TextPredictionEngine
         var maximumDistance = GetMaximumSpellDistance(word);
         var normalizedPreviousWord = NormalizeWord(previousWord);
 
-        return GetSpellCheckCandidates()
+        // Normalizing is an allocation per word, so the cheap length and first
+        // letter rejections have to run against the raw vocabulary first. They
+        // discard nearly all of the dictionary before anything is allocated, and
+        // the survivors are re-checked because normalizing can change them.
+        return GetSpellCheckCandidates(word)
+            .Where(candidate => IsSpellCheckCandidate(word, candidate, maximumDistance))
             .Select(NormalizeWord)
             .Where(candidate => IsSpellCheckCandidate(word, candidate, maximumDistance))
             .Where(candidate => !IsRemovedSuggestion(candidate))
@@ -677,15 +683,56 @@ internal sealed class TextPredictionEngine
             .Select(candidate => FormatSuggestion(candidate.Word));
     }
 
-    private IEnumerable<string> GetSpellCheckCandidates()
+    // A correction shares its first letter with the typed word, or swaps the first
+    // two. Bucketing the fixed vocabulary by first letter keeps a keystroke from
+    // walking the whole dictionary; the learned words are few enough to scan.
+    private IEnumerable<string> GetSpellCheckCandidates(string word)
     {
-        return BuiltInVocabulary
-            .Concat(BuiltInContractions)
-            .Concat(ExpandedCommonVocabulary.Value)
-            .Concat(DictionaryVocabulary.Value)
-            .Concat(Pretrained.Value.WordFrequency.Keys)
+        var candidates = GetSpellCheckBucket(word[0]);
+
+        if (word.Length > 1 && word[1] != word[0])
+        {
+            candidates = candidates.Concat(GetSpellCheckBucket(word[1]));
+        }
+
+        return candidates
             .Concat(_wordFrequency.Keys)
             .Concat(_acceptedFrequency.Keys);
+    }
+
+    private static IEnumerable<string> GetSpellCheckBucket(char firstLetter)
+    {
+        return SpellCheckIndex.Value.TryGetValue(char.ToLowerInvariant(firstLetter), out var bucket)
+            ? bucket
+            : [];
+    }
+
+    private static Dictionary<char, string[]> BuildSpellCheckIndex()
+    {
+        var buckets = new Dictionary<char, List<string>>();
+
+        foreach (var word in BuiltInVocabulary
+                     .Concat(BuiltInContractions)
+                     .Concat(ExpandedCommonVocabulary.Value)
+                     .Concat(DictionaryVocabulary.Value)
+                     .Concat(Pretrained.Value.WordFrequency.Keys))
+        {
+            if (word.Length == 0 || word.Length > MaxSpellCheckWordLength)
+            {
+                continue;
+            }
+
+            var firstLetter = char.ToLowerInvariant(word[0]);
+            if (!buckets.TryGetValue(firstLetter, out var bucket))
+            {
+                bucket = [];
+                buckets[firstLetter] = bucket;
+            }
+
+            bucket.Add(word);
+        }
+
+        return buckets.ToDictionary(bucket => bucket.Key, bucket => bucket.Value.ToArray());
     }
 
     private static int GetMaximumSpellDistance(string word)
@@ -697,9 +744,9 @@ internal sealed class TextPredictionEngine
     {
         return candidate.Length > 0 &&
                candidate.Length <= MaxSpellCheckWordLength &&
-               !candidate.Equals(word, StringComparison.OrdinalIgnoreCase) &&
                Math.Abs(candidate.Length - word.Length) <= maximumDistance &&
-               SharesSpellCheckAnchor(word, candidate);
+               SharesSpellCheckAnchor(word, candidate) &&
+               !candidate.Equals(word, StringComparison.OrdinalIgnoreCase);
     }
 
     private static bool SharesSpellCheckAnchor(string word, string candidate)
@@ -955,11 +1002,31 @@ internal sealed class TextPredictionEngine
 
     private static string NormalizePrefix(string value)
     {
+        // Vocabulary words are already in this form, and spell checking runs this
+        // over thousands of them per keystroke, so skip rebuilding the string.
+        if (IsAlreadyNormalized(value))
+        {
+            return value;
+        }
+
         return new string(value
             .Trim()
             .Select(character => character == '’' ? '\'' : char.ToLowerInvariant(character))
             .Where(character => char.IsLetter(character) || character == '\'')
             .ToArray());
+    }
+
+    private static bool IsAlreadyNormalized(string value)
+    {
+        foreach (var character in value)
+        {
+            if (character != '\'' && (!char.IsLetter(character) || char.ToLowerInvariant(character) != character))
+            {
+                return false;
+            }
+        }
+
+        return true;
     }
 
     private static string NormalizeWord(string value)

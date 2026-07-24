@@ -11,7 +11,7 @@
     <Product>Keebs</Product>
     <Description>Windows on-screen keyboard with local predictions</Description>
     <Company>Keebs</Company>
-    <Version>0.1.39</Version>
+    <Version>0.1.40</Version>
   </PropertyGroup>
 
   <ItemGroup>

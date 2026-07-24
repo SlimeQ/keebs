@@ -78,6 +78,20 @@ public sealed class TextPredictionEngineTests
         Assert.Equal(correction, suggestions[0]);
     }
 
+    [Theory]
+    [InlineData("oyu", "you")]
+    [InlineData("hte", "the")]
+    [InlineData("tihs", "this")]
+    public void SuggestsCorrectionsForTransposedLeadingLetters(string misspelledWord, string correction)
+    {
+        // Spell checking only walks the buckets for the first two letters, so a
+        // correction that swaps them has to be reachable from either one.
+        var engine = CreateEngine();
+        var suggestions = engine.GetSuggestions(new PredictionContext(misspelledWord, [])).ToArray();
+
+        Assert.Contains(correction, suggestions);
+    }
+
     [Fact]
     public void DoesNotSpellCorrectKnownTypedWords()
     {

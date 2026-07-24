@@ -19,6 +19,7 @@ namespace Keebs;
 public partial class MainWindow : Window, INotifyPropertyChanged
 {
     private static readonly TimeSpan FocusedContextReadTimeout = TimeSpan.FromMilliseconds(300);
+    private static readonly TimeSpan FocusedContextResyncDelay = TimeSpan.FromMilliseconds(150);
     internal static readonly TimeSpan AutomaticUpdateCheckInterval = TimeSpan.FromHours(1);
     private const double SwipeTapThreshold = 20;
     private const double SwipeActivationKeyDistance = 1.2;
@@ -62,7 +63,10 @@ public partial class MainWindow : Window, INotifyPropertyChanged
     private bool _pointerGestureActive;
     private bool _swipeGestureActive;
     private volatile FocusedInputSeedKind _focusedContextSeedKind;
+    private FocusedInputSeedKind _focusedInputResyncKind;
+    private DispatcherTimer? _focusedInputResyncTimer;
     private int _focusedContextSessionRevision;
+    private int _focusedInputStateRequestId;
     private int _focusedContextReadInFlight;
     private int _focusedContextRequestId;
     private int _updateCheckInFlight;
@@ -169,6 +173,7 @@ public partial class MainWindow : Window, INotifyPropertyChanged
         Closed += (_, _) =>
         {
             _updateCheckTimer?.Stop();
+            _focusedInputResyncTimer?.Stop();
             _physicalKeyboardMonitor.Dispose();
             _sensitiveInputMonitor.Dispose();
         };
@@ -1505,17 +1510,31 @@ public partial class MainWindow : Window, INotifyPropertyChanged
         _predictionEngine.LearnTypedText(commits);
     }
 
+    // Held keys repeat far faster than an accessibility read completes, so a
+    // resync per keystroke would queue reads the whole time a key is down. One
+    // read once the burst settles describes the field just as well.
     private void ScheduleFocusedInputResync(FocusedInputSeedKind kind)
     {
-        Dispatcher.BeginInvoke(() =>
-        {
-            if (PredictionsSuppressed)
-            {
-                return;
-            }
+        _focusedInputResyncTimer ??= CreateFocusedInputResyncTimer();
+        _focusedInputResyncKind = kind;
+        _focusedInputResyncTimer.Stop();
+        _focusedInputResyncTimer.Start();
+    }
 
-            RequestFocusedInputSeed(kind);
-        });
+    private DispatcherTimer CreateFocusedInputResyncTimer()
+    {
+        var timer = new DispatcherTimer { Interval = FocusedContextResyncDelay };
+        timer.Tick += (_, _) =>
+        {
+            timer.Stop();
+
+            if (!PredictionsSuppressed)
+            {
+                RequestFocusedInputSeed(_focusedInputResyncKind);
+            }
+        };
+
+        return timer;
     }
 
     private void TrackInputText(string text)
@@ -2064,20 +2083,52 @@ public partial class MainWindow : Window, INotifyPropertyChanged
 
     private void RefreshFocusedInputState()
     {
-        _focusedTextInputActive = FocusedTextContextReader.IsFocusedElementTextInput();
         _focusedTextContextSensitive = false;
         _inputLineBuffer.Clear();
-        RefreshPrivacyState();
 
-        if (PredictionsSuppressed)
+        // Asking UI Automation what has focus is a cross-process call into an
+        // application that may be busy. Running it here would stall the keyboard
+        // for as long as that application takes to answer.
+        _ = RefreshFocusedInputStateAsync(Interlocked.Increment(ref _focusedInputStateRequestId));
+    }
+
+    private async Task RefreshFocusedInputStateAsync(int requestId)
+    {
+        bool focusedTextInputActive;
+
+        try
         {
-            RefreshSuggestions();
+            focusedTextInputActive = await Task
+                .Run(FocusedTextContextReader.IsFocusedElementTextInput)
+                .ConfigureAwait(false);
+        }
+        catch (Exception)
+        {
+            // The focused element can disappear mid-read. The next focus change
+            // supplies fresh state.
             return;
         }
 
-        _textSession.ResetPredictionContext();
-        RefreshSuggestions();
-        RequestFocusedInputSeed(FocusedInputSeedKind.FocusChange);
+        await Dispatcher.InvokeAsync(() =>
+        {
+            if (requestId != Volatile.Read(ref _focusedInputStateRequestId))
+            {
+                return;
+            }
+
+            _focusedTextInputActive = focusedTextInputActive;
+            RefreshPrivacyState();
+
+            if (PredictionsSuppressed)
+            {
+                RefreshSuggestions();
+                return;
+            }
+
+            _textSession.ResetPredictionContext();
+            RefreshSuggestions();
+            RequestFocusedInputSeed(FocusedInputSeedKind.FocusChange);
+        });
     }
 
     private void RequestFocusedInputSeed(FocusedInputSeedKind kind)
@@ -2180,25 +2231,32 @@ public partial class MainWindow : Window, INotifyPropertyChanged
                 return;
             }
 
-            SeedTextSessionFromFocusedInput(context, request);
-            RefreshSuggestions();
+            // Refreshing means re-running the predictor, which is the most
+            // expensive thing on this thread. A discarded read changed nothing.
+            if (SeedTextSessionFromFocusedInput(context, request))
+            {
+                RefreshSuggestions();
+            }
         });
     }
 
-    private void SeedTextSessionFromFocusedInput(FocusedTextContext context, FocusedInputSeedRequest request)
+    private bool SeedTextSessionFromFocusedInput(FocusedTextContext context, FocusedInputSeedRequest request)
     {
         // Keystrokes that landed while the read was in flight are already tracked
         // locally, so this text is older than the session it would overwrite.
         if (request.SessionRevision != _textSession.Revision)
         {
-            return;
+            return false;
         }
 
         var seed = FocusedInputSeedPolicy.Resolve(context, request.Kind, _textSession.Context);
-        if (seed.ShouldApply)
+        if (!seed.ShouldApply)
         {
-            _textSession.SeedFromTextBeforeCaret(seed.TextBeforeCaret);
+            return false;
         }
+
+        _textSession.SeedFromTextBeforeCaret(seed.TextBeforeCaret);
+        return true;
     }
 
     private IReadOnlyList<VirtualKey> GetActiveModifiers()
