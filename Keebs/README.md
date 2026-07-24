@@ -80,8 +80,23 @@ python .\tools\postprocess_icon.py `
 - Existing prediction profiles are versioned and migrated on first launch after
   upgrade while preserving learned local frequencies and merging them at runtime
   with the bundled language base.
+- Hidden text that an application butts against the editable value, such as a
+  browser address bar's placeholder run, is kept as prediction context rather
+  than merged into the word being typed. Zero-width spaces, byte-order marks,
+  embedded objects, and stray control characters read as word boundaries, so a
+  word learned in that field is still suggested when the hidden run precedes the
+  input.
 - Known browser accessibility artifacts such as Firefox's stray `xhtml` context
-  are rejected and removed from migrated prediction profiles.
+  are rejected and removed from migrated prediction profiles. The token is
+  stripped wherever it is glued to the front of a word, not only at the front of
+  the context, and an unknown prefix that still carries it is never echoed back
+  as a suggestion.
+- Backspace re-reads the focused field so a session that drifted from the real
+  text repairs itself. A read that still shows a longer word than the session
+  tracks ran before the application applied the delete and is discarded, and any
+  read whose text predates a keystroke that landed while it was in flight is
+  discarded too. An empty field is distinguished from an unreadable one, so
+  deleting the last character clears the context instead of leaving stale words.
 - Press `Update` to check the latest GitHub release, download the attached MSI,
   and launch the installer.
 - Press `Test` to open the local typing-run harness. Finished runs are appended

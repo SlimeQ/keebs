@@ -141,4 +141,40 @@ public sealed class TextSessionTests
         Assert.Equal(string.Empty, session.Context.CurrentWord);
         Assert.Equal("hello", session.Context.PreviousWord);
     }
+
+    [Theory]
+    [InlineData("hello wor", "wor")]
+    [InlineData("hello world ", "")]
+    [InlineData("don't", "don't")]
+    [InlineData("HELLO Wor", "wor")]
+    [InlineData("", "")]
+    public void ParseCurrentWordMatchesTheSeededCurrentWord(string textBeforeCaret, string expected)
+    {
+        var session = new TextSession();
+        session.SeedFromTextBeforeCaret(textBeforeCaret);
+
+        Assert.Equal(expected, TextSession.ParseCurrentWord(textBeforeCaret));
+        Assert.Equal(session.Context.CurrentWord, TextSession.ParseCurrentWord(textBeforeCaret));
+    }
+
+    [Fact]
+    public void LocalEditsAdvanceTheRevisionAndSeedingDoesNot()
+    {
+        var session = new TextSession();
+        var initial = session.Revision;
+
+        session.SeedFromTextBeforeCaret("hello wor");
+        Assert.Equal(initial, session.Revision);
+
+        session.TypeText("l");
+        var afterTyping = session.Revision;
+        Assert.True(afterTyping > initial);
+
+        session.Backspace();
+        var afterBackspace = session.Revision;
+        Assert.True(afterBackspace > afterTyping);
+
+        session.BackspaceWord();
+        Assert.True(session.Revision > afterBackspace);
+    }
 }

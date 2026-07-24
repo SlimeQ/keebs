@@ -31,7 +31,7 @@ public partial class MainWindow : Window, INotifyPropertyChanged
     private const double SwipeContextScoreBonus = 4.0;
     private readonly ObservableCollection<string> _suggestions = [];
     private readonly TextPredictionEngine _predictionEngine;
-    private readonly Func<string> _readFocusedTextContext;
+    private readonly Func<FocusedTextContext> _readFocusedTextContext;
     private readonly TextSession _textSession = new();
     private readonly SensitiveInputMonitor _sensitiveInputMonitor = new();
     private readonly PhysicalKeyboardMonitor _physicalKeyboardMonitor = new();
@@ -61,7 +61,8 @@ public partial class MainWindow : Window, INotifyPropertyChanged
     private bool _physicalSelectionActive;
     private bool _pointerGestureActive;
     private bool _swipeGestureActive;
-    private volatile bool _focusedContextAllowEmptyContext;
+    private volatile FocusedInputSeedKind _focusedContextSeedKind;
+    private int _focusedContextSessionRevision;
     private int _focusedContextReadInFlight;
     private int _focusedContextRequestId;
     private int _updateCheckInFlight;
@@ -77,24 +78,24 @@ public partial class MainWindow : Window, INotifyPropertyChanged
     private string _footerHintText = "Predictions are local. Sensitive fields get raw key input only.";
 
     public MainWindow()
-        : this(new TextPredictionEngine(), startFocusMonitors: true, checkForUpdates: true, FocusedTextContextReader.GetTextBeforeCaret)
+        : this(new TextPredictionEngine(), startFocusMonitors: true, checkForUpdates: true, FocusedTextContextReader.ReadFocusedTextContext)
     {
     }
 
     internal MainWindow(TextPredictionEngine predictionEngine)
-        : this(predictionEngine, startFocusMonitors: true, checkForUpdates: false, FocusedTextContextReader.GetTextBeforeCaret)
+        : this(predictionEngine, startFocusMonitors: true, checkForUpdates: false, FocusedTextContextReader.ReadFocusedTextContext)
     {
     }
 
     internal MainWindow(TextPredictionEngine predictionEngine, bool startFocusMonitors)
-        : this(predictionEngine, startFocusMonitors, checkForUpdates: false, FocusedTextContextReader.GetTextBeforeCaret)
+        : this(predictionEngine, startFocusMonitors, checkForUpdates: false, FocusedTextContextReader.ReadFocusedTextContext)
     {
     }
 
     internal MainWindow(
         TextPredictionEngine predictionEngine,
         bool startFocusMonitors,
-        Func<string> readFocusedTextContext)
+        Func<FocusedTextContext> readFocusedTextContext)
         : this(predictionEngine, startFocusMonitors, checkForUpdates: false, readFocusedTextContext)
     {
     }
@@ -103,7 +104,7 @@ public partial class MainWindow : Window, INotifyPropertyChanged
         TextPredictionEngine predictionEngine,
         bool startFocusMonitors,
         bool checkForUpdates,
-        Func<string> readFocusedTextContext)
+        Func<FocusedTextContext> readFocusedTextContext)
     {
         _predictionEngine = predictionEngine;
         _readFocusedTextContext = readFocusedTextContext;
@@ -554,15 +555,24 @@ public partial class MainWindow : Window, INotifyPropertyChanged
                     RefreshKeyLabels();
                     return;
                 case "Backspace":
+                    var deleteWholeWord = _control;
                     SendVirtualKey(key);
                     if (PredictionsSuppressed)
                     {
                         break;
                     }
 
-                    _textSession.Backspace();
+                    if (deleteWholeWord)
+                    {
+                        _textSession.BackspaceWord();
+                    }
+                    else
+                    {
+                        _textSession.Backspace();
+                    }
+
                     TrackInputBackspace();
-                    ScheduleFocusedInputResync(allowEmptyContext: false);
+                    ScheduleFocusedInputResync(FocusedInputSeedKind.Backspace);
                     break;
                 case "Tab":
                     SendVirtualKey(key);
@@ -1495,7 +1505,7 @@ public partial class MainWindow : Window, INotifyPropertyChanged
         _predictionEngine.LearnTypedText(commits);
     }
 
-    private void ScheduleFocusedInputResync(bool allowEmptyContext)
+    private void ScheduleFocusedInputResync(FocusedInputSeedKind kind)
     {
         Dispatcher.BeginInvoke(() =>
         {
@@ -1504,7 +1514,7 @@ public partial class MainWindow : Window, INotifyPropertyChanged
                 return;
             }
 
-            RequestFocusedInputSeed(allowEmptyContext);
+            RequestFocusedInputSeed(kind);
         });
     }
 
@@ -1561,7 +1571,7 @@ public partial class MainWindow : Window, INotifyPropertyChanged
         _inputLineBuffer.Clear();
         _textSession.ResetPredictionContext();
         RefreshPrivacyState();
-        RequestFocusedInputSeed(allowEmptyContext: true);
+        RequestFocusedInputSeed(FocusedInputSeedKind.FocusChange);
     }
 
     internal void ApplyPhysicalKeyToPredictionSession(PhysicalKeyPressedEventArgs key)
@@ -1589,7 +1599,7 @@ public partial class MainWindow : Window, INotifyPropertyChanged
             {
                 _physicalSelectionActive = false;
                 _textSession.ResetPredictionContext();
-                RequestFocusedInputSeed(allowEmptyContext: false);
+                RequestFocusedInputSeed(FocusedInputSeedKind.CaretMove);
             }
 
             RefreshSuggestions();
@@ -1603,8 +1613,10 @@ public partial class MainWindow : Window, INotifyPropertyChanged
                 if (_physicalSelectionActive)
                 {
                     ResetAfterPhysicalSelectionEdit();
+                    break;
                 }
-                else if (key.Control)
+
+                if (key.Control)
                 {
                     _textSession.BackspaceWord();
                 }
@@ -1613,6 +1625,9 @@ public partial class MainWindow : Window, INotifyPropertyChanged
                     _textSession.Backspace();
                 }
 
+                // Deleting is where the session drifts from the field it mirrors,
+                // so re-read the real text instead of trusting the local model.
+                ScheduleFocusedInputResync(FocusedInputSeedKind.Backspace);
                 break;
             case VirtualKey.Delete:
                 if (_physicalSelectionActive)
@@ -1662,7 +1677,7 @@ public partial class MainWindow : Window, INotifyPropertyChanged
     {
         _physicalSelectionActive = false;
         _textSession.ResetPredictionContext();
-        RequestFocusedInputSeed(allowEmptyContext: false);
+        RequestFocusedInputSeed(FocusedInputSeedKind.CaretMove);
     }
 
     private static bool IsNavigationKey(VirtualKey key)
@@ -2062,12 +2077,13 @@ public partial class MainWindow : Window, INotifyPropertyChanged
 
         _textSession.ResetPredictionContext();
         RefreshSuggestions();
-        RequestFocusedInputSeed(allowEmptyContext: true);
+        RequestFocusedInputSeed(FocusedInputSeedKind.FocusChange);
     }
 
-    private void RequestFocusedInputSeed(bool allowEmptyContext)
+    private void RequestFocusedInputSeed(FocusedInputSeedKind kind)
     {
-        _focusedContextAllowEmptyContext = allowEmptyContext;
+        _focusedContextSeedKind = kind;
+        Volatile.Write(ref _focusedContextSessionRevision, _textSession.Revision);
         Interlocked.Increment(ref _focusedContextRequestId);
         TryStartFocusedInputSeedRead();
     }
@@ -2080,7 +2096,9 @@ public partial class MainWindow : Window, INotifyPropertyChanged
         }
 
         var requestId = Volatile.Read(ref _focusedContextRequestId);
-        _ = ReadFocusedInputContextAsync(requestId, _focusedContextAllowEmptyContext);
+        _ = ReadFocusedInputContextAsync(
+            requestId,
+            new FocusedInputSeedRequest(_focusedContextSeedKind, Volatile.Read(ref _focusedContextSessionRevision)));
     }
 
     private void CompleteFocusedInputSeedRead(int requestId)
@@ -2093,9 +2111,9 @@ public partial class MainWindow : Window, INotifyPropertyChanged
         }
     }
 
-    private async Task ReadFocusedInputContextAsync(int requestId, bool allowEmptyContext)
+    private async Task ReadFocusedInputContextAsync(int requestId, FocusedInputSeedRequest request)
     {
-        string textBeforeCaret;
+        FocusedTextContext context;
 
         try
         {
@@ -2107,11 +2125,11 @@ public partial class MainWindow : Window, INotifyPropertyChanged
                 // request behind it. Release the slot now, then apply this result
                 // only if it eventually completes while still current.
                 CompleteFocusedInputSeedRead(requestId);
-                _ = ApplyFocusedInputContextWhenReadyAsync(readTask, requestId, allowEmptyContext);
+                _ = ApplyFocusedInputContextWhenReadyAsync(readTask, requestId, request);
                 return;
             }
 
-            textBeforeCaret = await readTask.ConfigureAwait(false);
+            context = await readTask.ConfigureAwait(false);
         }
         catch (Exception)
         {
@@ -2121,18 +2139,18 @@ public partial class MainWindow : Window, INotifyPropertyChanged
 
         CompleteFocusedInputSeedRead(requestId);
 
-        await ApplyFocusedInputContextAsync(textBeforeCaret, requestId, allowEmptyContext);
+        await ApplyFocusedInputContextAsync(context, requestId, request);
     }
 
     private async Task ApplyFocusedInputContextWhenReadyAsync(
-        Task<string> readTask,
+        Task<FocusedTextContext> readTask,
         int requestId,
-        bool allowEmptyContext)
+        FocusedInputSeedRequest request)
     {
         try
         {
-            var textBeforeCaret = await readTask.ConfigureAwait(false);
-            await ApplyFocusedInputContextAsync(textBeforeCaret, requestId, allowEmptyContext);
+            var context = await readTask.ConfigureAwait(false);
+            await ApplyFocusedInputContextAsync(context, requestId, request);
         }
         catch (Exception)
         {
@@ -2142,9 +2160,9 @@ public partial class MainWindow : Window, INotifyPropertyChanged
     }
 
     private async Task ApplyFocusedInputContextAsync(
-        string textBeforeCaret,
+        FocusedTextContext context,
         int requestId,
-        bool allowEmptyContext)
+        FocusedInputSeedRequest request)
     {
         await Dispatcher.InvokeAsync(() =>
         {
@@ -2153,7 +2171,7 @@ public partial class MainWindow : Window, INotifyPropertyChanged
                 return;
             }
 
-            _focusedTextContextSensitive = SensitiveInputMonitor.IsSensitiveTextContext(textBeforeCaret);
+            _focusedTextContextSensitive = SensitiveInputMonitor.IsSensitiveTextContext(context.TextBeforeCaret);
             if (_focusedTextContextSensitive)
             {
                 _textSession.ResetPredictionContext();
@@ -2162,16 +2180,24 @@ public partial class MainWindow : Window, INotifyPropertyChanged
                 return;
             }
 
-            SeedTextSessionFromFocusedInput(textBeforeCaret, allowEmptyContext);
+            SeedTextSessionFromFocusedInput(context, request);
             RefreshSuggestions();
         });
     }
 
-    private void SeedTextSessionFromFocusedInput(string textBeforeCaret, bool allowEmptyContext)
+    private void SeedTextSessionFromFocusedInput(FocusedTextContext context, FocusedInputSeedRequest request)
     {
-        if (allowEmptyContext || textBeforeCaret.Length > 0)
+        // Keystrokes that landed while the read was in flight are already tracked
+        // locally, so this text is older than the session it would overwrite.
+        if (request.SessionRevision != _textSession.Revision)
         {
-            _textSession.SeedFromTextBeforeCaret(textBeforeCaret);
+            return;
+        }
+
+        var seed = FocusedInputSeedPolicy.Resolve(context, request.Kind, _textSession.Context.CurrentWord);
+        if (seed.ShouldApply)
+        {
+            _textSession.SeedFromTextBeforeCaret(seed.TextBeforeCaret);
         }
     }
 
@@ -2576,4 +2602,6 @@ public partial class MainWindow : Window, INotifyPropertyChanged
         VirtualKey? VirtualKey);
 
     private sealed record KeySlot(double Width, KeySpec? Key);
+
+    private readonly record struct FocusedInputSeedRequest(FocusedInputSeedKind Kind, int SessionRevision);
 }

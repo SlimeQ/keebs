@@ -25,19 +25,21 @@ public sealed class MainWindowLayoutTests
                         {
                             firstReadStarted.Set();
                             Assert.True(releaseFirstRead.Wait(TimeSpan.FromSeconds(5)));
-                            return "stale field";
+                            return FocusedTextContext.FromSanitizedText("stale field");
                         }
 
                         secondReadStarted.Set();
-                        return "current field";
+                        return FocusedTextContext.FromSanitizedText("current field");
                     });
                 var requestSeed = typeof(MainWindow).GetMethod(
                     "RequestFocusedInputSeed",
                     System.Reflection.BindingFlags.Instance | System.Reflection.BindingFlags.NonPublic)!;
 
-                requestSeed.Invoke(window, [true]);
+                var focusChange = Enum.Parse(requestSeed.GetParameters()[0].ParameterType, "FocusChange");
+
+                requestSeed.Invoke(window, [focusChange]);
                 Assert.True(firstReadStarted.Wait(TimeSpan.FromSeconds(5)));
-                requestSeed.Invoke(window, [true]);
+                requestSeed.Invoke(window, [focusChange]);
 
                 Assert.True(secondReadStarted.Wait(TimeSpan.FromSeconds(2)));
                 releaseFirstRead.Set();

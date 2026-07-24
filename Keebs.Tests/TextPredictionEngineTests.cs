@@ -214,6 +214,51 @@ public sealed class TextPredictionEngineTests
         Assert.Contains("\"Version\": 6", migratedJson);
     }
 
+    [Theory]
+    [InlineData("xhtml")]
+    [InlineData("xhtmlque")]
+    [InlineData("XHTMLsearc")]
+    public void UnknownPrefixesCarryingBrowserMetadataAreNotEchoedBack(string prefix)
+    {
+        var engine = CreateEngine();
+
+        var suggestions = engine.GetSuggestions(new PredictionContext(prefix, [])).ToArray();
+
+        Assert.DoesNotContain(suggestions, suggestion => suggestion.StartsWith("xhtml", StringComparison.OrdinalIgnoreCase));
+    }
+
+    [Fact]
+    public void WordsLearnedInAFieldWithHiddenTextAreStillSuggestedThere()
+    {
+        var engine = CreateEngine();
+        var session = new TextSession();
+
+        // Typing the address a few times is what the URL bar teaches Keebs.
+        engine.LearnTypedText(
+        [
+            new TextCommit("openclaw", string.Empty),
+            new TextCommit("openclaw", string.Empty),
+            new TextCommit("openclaw", string.Empty)
+        ]);
+
+        // The next read of that field prepends its hidden text to the input.
+        session.SeedFromTextBeforeCaret(
+            FocusedTextContextReader.SanitizeSeedText("xhtmlSearch with Google\u200Bopencl"));
+
+        Assert.Equal("opencl", session.Context.CurrentWord);
+        Assert.Equal("openclaw", engine.GetSuggestions(session.Context).First());
+    }
+
+    [Fact]
+    public void UnknownTypedPrefixesAreStillEchoedBack()
+    {
+        var engine = CreateEngine();
+
+        var suggestions = engine.GetSuggestions(new PredictionContext("zzqwertyz", [])).ToArray();
+
+        Assert.Equal("zzqwertyz", suggestions.Single());
+    }
+
     [Fact]
     public void RemovedSuggestionsAreSuppressedAndPersisted()
     {

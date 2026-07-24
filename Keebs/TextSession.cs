@@ -15,6 +15,34 @@ internal sealed class TextSession
 
     public bool NeedsWordBoundaryBeforeNextWord => _needsWordBoundaryBeforeNextWord;
 
+    /// <summary>
+    /// Bumped by every local edit so an in-flight accessibility read can tell
+    /// that its text predates the session it is about to overwrite.
+    /// </summary>
+    public int Revision { get; private set; }
+
+    /// <summary>
+    /// The word the caret sits in for a block of text, using the same parsing
+    /// rules as <see cref="SeedFromTextBeforeCaret"/>.
+    /// </summary>
+    public static string ParseCurrentWord(string textBeforeCaret)
+    {
+        var word = new StringBuilder();
+
+        for (var index = textBeforeCaret.Length - 1; index >= 0; index--)
+        {
+            var normalizedCharacter = Normalize(textBeforeCaret[index]);
+            if (!char.IsLetter(normalizedCharacter) && normalizedCharacter != '\'')
+            {
+                break;
+            }
+
+            word.Insert(0, normalizedCharacter);
+        }
+
+        return word.ToString();
+    }
+
     public void SeedFromTextBeforeCaret(string textBeforeCaret)
     {
         _currentWord.Clear();
@@ -27,7 +55,7 @@ internal sealed class TextSession
 
         foreach (var character in textBeforeCaret)
         {
-            var normalizedCharacter = character == '’' ? '\'' : char.ToLowerInvariant(character);
+            var normalizedCharacter = Normalize(character);
             if (char.IsLetter(normalizedCharacter) || normalizedCharacter == '\'')
             {
                 word.Append(normalizedCharacter);
@@ -62,9 +90,14 @@ internal sealed class TextSession
     {
         var commits = new List<TextCommit>();
 
+        if (text.Length > 0)
+        {
+            Revision++;
+        }
+
         foreach (var character in text)
         {
-            var normalizedCharacter = character == '’' ? '\'' : char.ToLowerInvariant(character);
+            var normalizedCharacter = Normalize(character);
             if (char.IsLetter(normalizedCharacter) || normalizedCharacter == '\'')
             {
                 _currentWord.Append(normalizedCharacter);
@@ -91,6 +124,8 @@ internal sealed class TextSession
 
     public void Backspace()
     {
+        Revision++;
+
         if (_currentWord.Length > 0)
         {
             _currentWord.Remove(_currentWord.Length - 1, 1);
@@ -127,6 +162,8 @@ internal sealed class TextSession
 
     public void BackspaceWord()
     {
+        Revision++;
+
         if (_currentWord.Length > 0)
         {
             _currentWord.Clear();
@@ -161,6 +198,8 @@ internal sealed class TextSession
             return null;
         }
 
+        Revision++;
+
         var word = _currentWord.ToString();
         var previousWord = _previousWords.Count == 0 ? string.Empty : _previousWords.Last();
         _previousWords.Enqueue(word);
@@ -177,6 +216,8 @@ internal sealed class TextSession
 
     public SuggestionReplacement AcceptSuggestion(string suggestion)
     {
+        Revision++;
+
         var typedLength = _currentWord.Length;
 
         _currentWord.Clear();
@@ -189,10 +230,16 @@ internal sealed class TextSession
 
     public void ResetPredictionContext()
     {
+        Revision++;
         _currentWord.Clear();
         _previousWords.Clear();
         _boundaryCharactersAfterPreviousWord = 0;
         _needsWordBoundaryBeforeNextWord = false;
+    }
+
+    private static char Normalize(char character)
+    {
+        return character == '’' ? '\'' : char.ToLowerInvariant(character);
     }
 
     private static void AddParsedWord(List<string> words, StringBuilder word)

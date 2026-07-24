@@ -302,8 +302,10 @@ internal sealed class TextPredictionEngine
 
         AddDictionaryFallbacks(ranked, normalizedPrefix);
 
+        // Echoing an unknown prefix back is how accessibility artifacts that
+        // survived seed sanitizing would reach the suggestion strip.
         return ranked.Count == 0 && IsWordLikePrefix(prefix)
-            ? IsRemovedSuggestion(normalizedPrefix) ? [] : [normalizedPrefix]
+            ? IsRemovedSuggestion(normalizedPrefix) || IsRejectedPredictionWord(normalizedPrefix) ? [] : [normalizedPrefix]
             : ranked;
     }
 
