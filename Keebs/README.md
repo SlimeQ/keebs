@@ -92,11 +92,14 @@ python .\tools\postprocess_icon.py `
   the context, and an unknown prefix that still carries it is never echoed back
   as a suggestion.
 - Backspace re-reads the focused field so a session that drifted from the real
-  text repairs itself. A read that still shows a longer word than the session
-  tracks ran before the application applied the delete and is discarded, and any
-  read whose text predates a keystroke that landed while it was in flight is
-  discarded too. An empty field is distinguished from an unreadable one, so
-  deleting the last character clears the context instead of leaving stale words.
+  text repairs itself, but the read is only applied when it plausibly describes
+  the same text. A word longer than the tracked one means the read ran before the
+  delete landed; a word that is not the tail of the tracked one belongs to
+  different text; and a provider that answers with nothing while the session still
+  holds context is describing a field Keebs is not typing into, not an emptied
+  one. Reads whose text predates a keystroke that landed while they were in flight
+  are discarded as well. An empty answer is only believed once the session is
+  empty too, so deleting the last character still clears the context.
 - Press `Update` to check the latest GitHub release, download the attached MSI,
   and launch the installer.
 - Press `Test` to open the local typing-run harness. Finished runs are appended
@@ -110,7 +113,7 @@ GitHub releases are built automatically from version tags in the canonical
 `SlimeQ/keebs` repository.
 
 ```powershell
-git tag v0.1.38
+git tag v0.1.39
 git push origin main --tags
 ```
 

@@ -60,15 +60,6 @@ internal static class FocusedTextContextReader
             }
         }
 
-        // The focused element owns the keystrokes, so its own value is the truth.
-        // Reading it even when it is empty keeps a cleared field from falling back
-        // to ancestor document text, which is where browser metadata leaks in.
-        if (candidates.Count > 0 && TryReadValue(candidates[0], out var focusedValue))
-        {
-            TryTrimContext(focusedValue, out var focusedContext);
-            return FocusedTextContext.FromSanitizedText(focusedContext);
-        }
-
         // A browser can expose a document-like TextPattern on an inner element and
         // the actual editable ValuePattern on an ancestor. Prefer the editable value
         // before falling back to document text so UI metadata is not treated as input.
@@ -89,8 +80,10 @@ internal static class FocusedTextContextReader
             }
         }
 
-        // Every provider answered with text that sanitized away to nothing, so the
-        // field really is empty rather than unreadable.
+        // Nothing produced text. An element that answered at all reports an empty
+        // field; an element that never answered reports nothing at all. A control
+        // whose value is empty because its text lives behind another pattern is
+        // covered by the earlier passes, so it does not reach this as "empty".
         return providerFound ? FocusedTextContext.Empty : FocusedTextContext.Unavailable;
     }
 

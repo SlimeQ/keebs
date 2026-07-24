@@ -24,7 +24,10 @@ internal readonly record struct FocusedInputSeed(bool ShouldApply, string TextBe
 /// </summary>
 internal static class FocusedInputSeedPolicy
 {
-    public static FocusedInputSeed Resolve(FocusedTextContext context, FocusedInputSeedKind kind, string currentWord)
+    public static FocusedInputSeed Resolve(
+        FocusedTextContext context,
+        FocusedInputSeedKind kind,
+        PredictionContext session)
     {
         if (!context.IsAvailable)
         {
@@ -34,15 +37,43 @@ internal static class FocusedInputSeedPolicy
                 : FocusedInputSeed.Skip;
         }
 
-        // A backspace can only shrink the word at the caret. A read that still
-        // shows a longer word ran before the application applied the delete, and
-        // seeding from it would put the deleted character back.
-        if (kind == FocusedInputSeedKind.Backspace &&
-            TextSession.ParseCurrentWord(context.TextBeforeCaret).Length > currentWord.Length)
+        if (kind == FocusedInputSeedKind.Backspace && !DescribesSameText(context.TextBeforeCaret, session))
         {
             return FocusedInputSeed.Skip;
         }
 
         return new FocusedInputSeed(true, context.TextBeforeCaret);
+    }
+
+    /// <summary>
+    /// Whether a read taken after a backspace plausibly describes the text the
+    /// session was already tracking. A backspace deletes one character behind the
+    /// caret, so anything the read cannot explain that way came from a provider
+    /// that is out of step with the field being typed into.
+    /// </summary>
+    private static bool DescribesSameText(string textBeforeCaret, PredictionContext session)
+    {
+        var sessionHasContext = session.CurrentWord.Length > 0 || session.PreviousWords.Count > 0;
+
+        // Providers answer with nothing for plenty of reasons that are not "the
+        // user deleted everything" -- a control whose text lives behind a pattern
+        // it did not offer, a document that has not settled, a value that is not
+        // the editable text. Believing them would throw away real context.
+        if (textBeforeCaret.Trim().Length == 0)
+        {
+            return !sessionHasContext;
+        }
+
+        var readWord = TextSession.ParseCurrentWord(textBeforeCaret);
+        if (readWord.Length == 0)
+        {
+            return session.CurrentWord.Length == 0;
+        }
+
+        // The word at the caret can only have got shorter. A longer one means the
+        // read ran before the delete landed; one that is not the tail of the word
+        // being tracked belongs to different text entirely. Matching the tail is
+        // what lets a word carrying hidden metadata be repaired.
+        return session.CurrentWord.EndsWith(readWord, StringComparison.Ordinal);
     }
 }

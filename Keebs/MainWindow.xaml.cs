@@ -2194,7 +2194,7 @@ public partial class MainWindow : Window, INotifyPropertyChanged
             return;
         }
 
-        var seed = FocusedInputSeedPolicy.Resolve(context, request.Kind, _textSession.Context.CurrentWord);
+        var seed = FocusedInputSeedPolicy.Resolve(context, request.Kind, _textSession.Context);
         if (seed.ShouldApply)
         {
             _textSession.SeedFromTextBeforeCaret(seed.TextBeforeCaret);
